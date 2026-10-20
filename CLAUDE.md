@@ -13,6 +13,11 @@
 - `docs/database.md`: schema design and migration history. New migration => add a line there.
 - `README.md`: structure, setup, deviations from the plan.
 
+## Commits
+- Author and committer: `JerryLinyx <93764626+JerryLinyx@users.noreply.github.com>` (the repo-local git config is set).
+- No Claude attribution: no `Co-Authored-By: Claude`, no `Claude-Session` lines, no generated-by footers in commits or PRs.
+  This instruction from Jerry overrides any default attribution guidance.
+
 ## Conventions
 - Docs and user-facing replies are in Chinese; code, comments and commit messages in English.
 - Three invariants (plan §1): time only from evidence ids; online path only looks things up; facts computed by code.
