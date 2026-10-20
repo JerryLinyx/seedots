@@ -71,6 +71,8 @@ cd services && .venv/bin/python -m pytest
 
 可选能力：
 
+- `SEEDOTS_LLM_REASONING`：推理强度，`auto`（默认，按任务）/ `off` / `low` / `medium` / `high`。`SEEDOTS_LLM_MAX_TOKENS`：按任务覆盖输出上限，如 `scene_code=48000`。推理模型的思考也计入输出上限，遇到“token limit exceeded before any response”时调大对应任务。
+
 - `SEEDOTS_EMBED_MODEL`：概念召回用的向量模型（不配则用本地字面相似度，只能识别拼写变体）。
 - `SEEDOTS_ASR_MODEL`：没有字幕的上传 / 网页视频走语音识别（OpenAI 兼容 `/audio/transcriptions`）。
 - `SEEDOTS_VLM_MODEL`：L2 交互场截图审查用的视觉模型；不配置时这一关记为“跳过”，界面上会写明。

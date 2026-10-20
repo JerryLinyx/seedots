@@ -78,6 +78,56 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaises(BudgetExceeded):
             tight.run("count", {"what": "x", "text": "b"})
 
+    def thinking_gw(self, needs: int, *, reject_reasoning=False, **gw):
+        """A reasoning model that burns `needs` tokens thinking: below that cap it stops with
+        finish_reason=length and no answer."""
+        from pydantic_ai.exceptions import ModelHTTPError
+        from pydantic_ai.messages import ModelResponse, TextPart
+        from pydantic_ai.models.function import FunctionModel
+
+        seen = []
+
+        def call(messages, info):
+            st = dict(info.model_settings or {})
+            seen.append(st)
+            if reject_reasoning and "openai_reasoning_effort" in st:
+                raise ModelHTTPError(400, "fake", {"error": "unknown parameter: reasoning_effort"})
+            if st.get("max_tokens", 0) < needs:
+                return ModelResponse(parts=[], finish_reason="length")
+            return ModelResponse(parts=[TextPart('{"n": 7}')])
+
+        g = Gateway(prompts=self.lib, model_factory=lambda task: FunctionModel(call), model_name="fake",
+                    tasks=[TaskSpec("count", Out, max_tokens=2000, reasoning="low")],
+                    usage_sink=self.usage.append, **gw)
+        return g, seen
+
+    def test_token_limit_before_answer_retries_with_larger_cap(self):
+        gw, seen = self.thinking_gw(5000)
+        self.assertEqual(gw.run("count", {"what": "x", "text": "y"}).n, 7)
+        self.assertEqual([s["max_tokens"] for s in seen], [2000, 6000])
+        self.assertEqual(self.usage[-1].context_manifest["max_tokens_retry"], 6000)
+        self.assertEqual(seen[0]["openai_reasoning_effort"], "low")
+        # only one retry: a model that needs even more still fails, with the reason logged
+        gw, seen = self.thinking_gw(50_000)
+        with self.assertRaises(LLMError) as ctx:
+            gw.run("count", {"what": "x", "text": "y"})
+        self.assertIn("token limit", str(ctx.exception))
+        self.assertEqual(len(seen), 2)
+
+    def test_reasoning_setting_and_overrides(self):
+        gw, seen = self.thinking_gw(0, reasoning="off", max_tokens={"count": 9000})
+        gw.run("count", {"what": "x", "text": "y"})
+        self.assertNotIn("openai_reasoning_effort", seen[0])
+        self.assertEqual(seen[0]["max_tokens"], 9000)
+        gw, seen = self.thinking_gw(0, reasoning="high")
+        gw.run("count", {"what": "x", "text": "y"})
+        self.assertEqual(seen[0]["openai_reasoning_effort"], "high")
+        # a provider that rejects the parameter: drop it, retry, and stop sending it
+        gw, seen = self.thinking_gw(0, reject_reasoning=True)
+        self.assertEqual(gw.run("count", {"what": "x", "text": "y"}).n, 7)
+        gw.run("count", {"what": "x", "text": "z"})
+        self.assertEqual(["openai_reasoning_effort" in s for s in seen], [True, False, False])
+
     def test_missing_variable_is_an_error(self):
         with self.assertRaises(PromptError):
             self.gw(lambda *a: '{"n": 1}').run("count", {"what": "x"})

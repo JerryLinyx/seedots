@@ -26,6 +26,7 @@ os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 from pydantic import BaseModel  # noqa: E402
 from pydantic_ai import Agent, NativeOutput, PromptedOutput, ToolOutput  # noqa: E402
+from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior  # noqa: E402
 from pydantic_ai.messages import (BinaryContent, ModelMessage, ModelRequest, ModelResponse,  # noqa: E402
                                   TextPart, UserPromptPart)
 from pydantic_ai.usage import UsageLimits  # noqa: E402
@@ -37,6 +38,12 @@ from seedots.common.llm.prompts import Prompt, PromptLibrary  # noqa: E402
 log = logging.getLogger("seedots.llm")
 
 OutputMode = Literal["prompted", "native", "tool"]
+Reasoning = Literal["low", "medium", "high"]
+
+# Reasoning models spend output tokens on thinking before they answer, and `max_tokens`
+# caps thinking + answer together. When the cap is hit before any answer, retry once
+# with a larger cap instead of failing.
+MAX_TOKENS_CEILING = 65_536
 
 
 class LLMError(RuntimeError):
@@ -59,6 +66,7 @@ class TaskSpec:
     cache: bool = False                       # cache by rendered prompt (deterministic tasks only)
     output_mode: OutputMode = "prompted"      # prompted works with any JSON-capable model
     daily_token_budget: int | None = None
+    reasoning: Reasoning | None = None        # reasoning effort for thinking models; None -> provider default
 
 
 @dataclass
@@ -131,7 +139,11 @@ def history_messages(turns: Sequence[tuple[str, str]]) -> list[ModelMessage]:
 class Gateway:
     def __init__(self, *, prompts: PromptLibrary, model_factory: ModelFactory, model_name: str,
                  tasks: Sequence[TaskSpec], usage_sink: UsageSink | None = None,
-                 cache: CacheStore | None = None, model_names: dict[str, str] | None = None):
+                 cache: CacheStore | None = None, model_names: dict[str, str] | None = None,
+                 reasoning: str = "auto", max_tokens: dict[str, int] | None = None):
+        """`reasoning`: "auto" sends each task's own effort, "off" never sends the parameter
+        (for providers that reject it), or a level forces that effort on every task.
+        `max_tokens` overrides the per-task caps (from SEEDOTS_LLM_MAX_TOKENS)."""
         self.prompts = prompts
         self.model_factory = model_factory
         self.model_name = model_name
@@ -142,6 +154,9 @@ class Gateway:
         self._budget = _Budget()
         self._agents: dict[tuple[str, int], Agent] = {}
         self._lock = threading.Lock()
+        self.reasoning = reasoning
+        self.max_tokens = max_tokens or {}
+        self._reasoning_rejected = False
 
     # ----------------------------------------------------------------- internals
     def spec(self, task: str) -> TaskSpec:
@@ -157,11 +172,33 @@ class Gateway:
                     self.model_factory(spec.name),
                     output_type=_output_spec(spec),
                     retries={"output": spec.output_retries, "tools": 1},
-                    model_settings={"temperature": spec.temperature, "max_tokens": spec.max_tokens,
-                                    "timeout": spec.timeout},
                     name=spec.name,
                 )
             return self._agents[key]
+
+    def _settings(self, spec: TaskSpec, max_tokens: int | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {"temperature": spec.temperature, "timeout": spec.timeout,
+                               "max_tokens": max_tokens or self.max_tokens.get(spec.name, spec.max_tokens)}
+        effort = spec.reasoning if self.reasoning == "auto" else None if self.reasoning == "off" else self.reasoning
+        if effort and not self._reasoning_rejected:
+            out["openai_reasoning_effort"] = effort
+        return out
+
+    def _recover(self, exc: Exception, settings: dict[str, Any], tried: set[str]) -> dict[str, Any] | None:
+        """Settings for one more attempt, or None when the error is not one we can fix."""
+        if isinstance(exc, UnexpectedModelBehavior) and "token limit" in str(exc) and "tokens" not in tried:
+            tried.add("tokens")
+            bigger = min(MAX_TOKENS_CEILING, settings["max_tokens"] * 3)
+            if bigger > settings["max_tokens"]:
+                log.warning("max_tokens %s used up before an answer; retrying with %s", settings["max_tokens"], bigger)
+                return {**settings, "max_tokens": bigger}
+        if (isinstance(exc, ModelHTTPError) and exc.status_code in (400, 422) and "openai_reasoning_effort" in settings
+                and "reasoning" in str(exc).lower() and "reasoning" not in tried):
+            tried.add("reasoning")
+            log.warning("provider rejected reasoning_effort; not sending it again")
+            self._reasoning_rejected = True
+            return {k: v for k, v in settings.items() if k != "openai_reasoning_effort"}
+        return None
 
     def _record(self, rec: UsageRecord) -> None:
         self._budget.add(rec.task, rec.input_tokens + rec.output_tokens)
@@ -200,16 +237,24 @@ class Gateway:
         user_prompt: Any = user
         if images:
             user_prompt = [user, *(BinaryContent(data=img, media_type="image/png") for img in images)]
-        try:
-            result = self._agent(spec, prompt).run_sync(
-                user_prompt, instructions=system,
-                toolsets=[FunctionToolset(list(tools))] if tools else None,
-                usage_limits=UsageLimits(request_limit=max_requests) if max_requests else None)
-        except Exception as exc:
-            rec.error = f"{type(exc).__name__}: {exc}"[:500]
-            rec.latency_ms = int((time.perf_counter() - started) * 1000)
-            self._record(rec)
-            raise LLMError(rec.error) from exc
+        settings, tried = self._settings(spec), set()
+        while True:
+            try:
+                result = self._agent(spec, prompt).run_sync(
+                    user_prompt, instructions=system, model_settings=settings,
+                    toolsets=[FunctionToolset(list(tools))] if tools else None,
+                    usage_limits=UsageLimits(request_limit=max_requests) if max_requests else None)
+                break
+            except Exception as exc:
+                if (retry := self._recover(exc, settings, tried)) is not None:
+                    settings = retry
+                    continue
+                rec.error = f"{type(exc).__name__}: {exc}"[:500]
+                rec.latency_ms = int((time.perf_counter() - started) * 1000)
+                self._record(rec)
+                raise LLMError(rec.error) from exc
+        if settings["max_tokens"] != self._settings(spec)["max_tokens"]:
+            rec.context_manifest["max_tokens_retry"] = settings["max_tokens"]
         usage = result.usage
         rec.ok, rec.latency_ms = True, int((time.perf_counter() - started) * 1000)
         rec.input_tokens, rec.output_tokens, rec.requests = usage.input_tokens, usage.output_tokens, usage.requests
@@ -233,15 +278,25 @@ class Gateway:
         rec = UsageRecord(task=task, model=self.model_names.get(task, self.model_name), prompt_version=prompt.tag, ok=False, latency_ms=0,
                           context_manifest={**(manifest or {}), "tools": [t.__name__ for t in tools]})
         toolsets = [FunctionToolset(list(tools))] if tools else None
+        settings, tried = self._settings(spec), set()
         try:
-            async with self._agent(spec, prompt).run_stream(
-                    user, instructions=system, message_history=history_messages(history),
-                    toolsets=toolsets) as res:
-                async for delta in res.stream_text(delta=True):
-                    if rec.first_token_ms is None:
-                        rec.first_token_ms = int((time.perf_counter() - started) * 1000)
-                    yield delta
-                usage = res.usage
+            while True:
+                try:
+                    async with self._agent(spec, prompt).run_stream(
+                            user, instructions=system, message_history=history_messages(history),
+                            toolsets=toolsets, model_settings=settings) as res:
+                        async for delta in res.stream_text(delta=True):
+                            if rec.first_token_ms is None:
+                                rec.first_token_ms = int((time.perf_counter() - started) * 1000)
+                            yield delta
+                        usage = res.usage
+                    break
+                except Exception as exc:
+                    # retry only while nothing has reached the caller
+                    if rec.first_token_ms is None and (retry := self._recover(exc, settings, tried)) is not None:
+                        settings = retry
+                        continue
+                    raise
             rec.ok = True
             rec.input_tokens, rec.output_tokens, rec.requests = usage.input_tokens, usage.output_tokens, usage.requests
         except Exception as exc:

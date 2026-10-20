@@ -26,16 +26,19 @@ from seedots.learning.scenes.sandbox import NodeSandbox
 from seedots.learning.scenes.service import WORKFLOW as SCENE_WORKFLOW, CodeOut, ReviewOut, SceneService, SpecOut
 
 PROMPTS = Path(__file__).parent / "prompts"
+# max_tokens caps thinking + answer for reasoning models, so it is generous; the gateway retries
+# once with a larger cap if a model still runs out before answering. Latency-bound tasks ask for
+# low reasoning effort (only sent when SEEDOTS_LLM_REASONING=auto).
 TASKS = [
-    TaskSpec("concepts", ConceptsOut, temperature=0.1, max_tokens=3000, cache=True),
-    TaskSpec("concept_judge", JudgeOut, temperature=0.0, max_tokens=300, cache=True),
-    TaskSpec("items", ItemsOut, temperature=0.3, max_tokens=6000, cache=True),
-    TaskSpec("select_action", SelectOut, temperature=0.0, max_tokens=300, timeout=20),
-    TaskSpec("coach", None, temperature=0.4, max_tokens=700, timeout=60),
-    TaskSpec("card", CardOut, temperature=0.3, max_tokens=900),
-    TaskSpec("scene_spec", SpecOut, temperature=0.2, max_tokens=2000, cache=True),
-    TaskSpec("scene_code", CodeOut, temperature=0.3, max_tokens=8000, timeout=180, output_retries=2),
-    TaskSpec("scene_review", ReviewOut, temperature=0.0, max_tokens=400, timeout=60),
+    TaskSpec("concepts", ConceptsOut, temperature=0.1, max_tokens=12000, timeout=180, cache=True),
+    TaskSpec("concept_judge", JudgeOut, temperature=0.0, max_tokens=4000, reasoning="low", cache=True),
+    TaskSpec("items", ItemsOut, temperature=0.3, max_tokens=16000, timeout=240, cache=True),
+    TaskSpec("select_action", SelectOut, temperature=0.0, max_tokens=4000, timeout=20, reasoning="low"),
+    TaskSpec("coach", None, temperature=0.4, max_tokens=6000, timeout=90, reasoning="low"),
+    TaskSpec("card", CardOut, temperature=0.3, max_tokens=6000, reasoning="low"),
+    TaskSpec("scene_spec", SpecOut, temperature=0.2, max_tokens=12000, timeout=180, cache=True),
+    TaskSpec("scene_code", CodeOut, temperature=0.3, max_tokens=32000, timeout=420, output_retries=2),
+    TaskSpec("scene_review", ReviewOut, temperature=0.0, max_tokens=4000, timeout=90, reasoning="low"),
 ]
 
 

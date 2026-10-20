@@ -47,6 +47,8 @@ class Settings:
     embeddings: ModelEndpoint            # concept recall; falls back to a local lexical embedder
     asr: ModelEndpoint                   # /audio/transcriptions; required only for sources without captions
     vlm: ModelEndpoint                   # vision model for the scene screenshot review gate
+    llm_reasoning: str                   # "auto" (per-task effort) | "off" | "low" | "medium" | "high"
+    llm_max_tokens: dict[str, int]       # per-task max_tokens overrides
     # databases (each service owns one)
     media_db_url: str
     learning_db_url: str
@@ -65,6 +67,16 @@ class Settings:
     web_origins: list[str] = field(default_factory=list)
 
 
+def _task_ints(raw: str) -> dict[str, int]:
+    """"scene_code=48000, items=20000" -> {"scene_code": 48000, "items": 20000}"""
+    out: dict[str, int] = {}
+    for part in raw.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = int(v.strip())
+    return out
+
+
 def _sqlite_url(data_dir: Path, name: str) -> str:
     return f"sqlite:///{data_dir / name}"
 
@@ -74,12 +86,14 @@ def load_settings() -> Settings:
     if not data_dir.is_absolute():
         data_dir = REPO_ROOT / data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
-    llm_base = _env("SEEDOTS_LLM_BASE_URL", "https://api.tokenrouter.io/v1").rstrip("/")
+    llm_base = _env("SEEDOTS_LLM_BASE_URL", "https://api.tokenrouter.com/v1").rstrip("/")
     llm_key = _env("SEEDOTS_LLM_API_KEY")
     return Settings(
         data_dir=data_dir,
         llm=ModelEndpoint(llm_base, llm_key, _env("SEEDOTS_LLM_MODEL", "deepseek/deepseek-v4-flash-0731")),
         llm_fake=_flag("SEEDOTS_LLM_FAKE"),
+        llm_reasoning=_env("SEEDOTS_LLM_REASONING", "auto").lower() or "auto",
+        llm_max_tokens=_task_ints(_env("SEEDOTS_LLM_MAX_TOKENS")),
         embeddings=ModelEndpoint(_env("SEEDOTS_EMBED_BASE_URL", llm_base).rstrip("/"),
                                  _env("SEEDOTS_EMBED_API_KEY", llm_key), _env("SEEDOTS_EMBED_MODEL")),
         asr=ModelEndpoint(_env("SEEDOTS_ASR_BASE_URL", llm_base).rstrip("/"),

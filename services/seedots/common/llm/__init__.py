@@ -24,4 +24,5 @@ def build_gateway(settings, *, prompt_dir, tasks, brain, db=None, usage_model=No
         usage_sink=DbUsageSink(db, usage_model) if db is not None and usage_model else None,
         cache=DbCache(db, cache_model) if db is not None and cache_model else None,
         model_names={task: ep.model for task, ep in (task_endpoints or {}).items() if task in routed},
+        reasoning=settings.llm_reasoning, max_tokens=settings.llm_max_tokens,
     )

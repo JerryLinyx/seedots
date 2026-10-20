@@ -16,7 +16,7 @@ def test_settings(tmp: Path, **over):
         embeddings=ModelEndpoint(), asr=ModelEndpoint(), vlm=ModelEndpoint(),
         media_db_url=f"sqlite:///{tmp / 'media.sqlite3'}", learning_db_url=f"sqlite:///{tmp / 'learning.sqlite3'}",
         auto_migrate=True, workflow_engine="inprocess", media_webhook_url="http://learning.test/hooks/media",
-        webhook_secret="s3cret-test", action_selector="llm", **over)
+        webhook_secret="s3cret-test", action_selector="llm", llm_reasoning="auto", llm_max_tokens={}, **over)
 
 
 def make_video(path: Path, seconds: int = 30) -> Path:

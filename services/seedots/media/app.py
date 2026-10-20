@@ -18,7 +18,7 @@ from seedots.media.service import MediaService
 from seedots.media.webhooks import Dispatcher, Poster, httpx_post
 
 PROMPTS = Path(__file__).parent / "prompts"
-TASKS = [TaskSpec("outline", OutlineOut, temperature=0.1, max_tokens=4000, cache=True)]
+TASKS = [TaskSpec("outline", OutlineOut, temperature=0.1, max_tokens=12000, timeout=180, cache=True)]
 
 
 @dataclass
