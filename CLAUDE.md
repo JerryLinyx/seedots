@@ -17,7 +17,8 @@
 - `docs/progress.md`: tasks (T01…), milestones, weekly log. Update a task's status when you start or finish it,
   with the commit hash.
 - `docs/database.md`: schema design and migration history. New migration => add a line there.
-- `README.md`: structure, setup, deviations from the plan.
+- `README.md` (English) and `README.zh-CN.md` (Chinese): features, setup, configuration, structure,
+  deviations from the plan. Keep the two in sync: a change to one goes into the other in the same commit.
 
 ## Commits
 - Author and committer: `JerryLinyx <93764626+JerryLinyx@users.noreply.github.com>` (the repo-local git config is set).
@@ -25,7 +26,7 @@
   This instruction from Jerry overrides any default attribution guidance.
 
 ## Conventions
-- Docs and user-facing replies are in Chinese; code, comments and commit messages in English.
+- Docs and user-facing replies are in Chinese (except `README.md`, which is English); code, comments and commit messages in English.
 - Three invariants (plan §1): time only from evidence ids; online path only looks things up; facts computed by code.
 - Every model call goes through the gateway (`services/seedots/common/llm`); prompts are versioned files.
 - Tests: `cd services && python -m pytest` (offline, fake model). L2 sandbox tests need `services/scenekit` deps.

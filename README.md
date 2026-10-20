@@ -1,107 +1,279 @@
 # SeeDots
 
-See the dots. Connect them. 给正在看的教学视频加一层 AI：在恰当的时刻出现可验证的学习动作，答案指回视频里的具体时刻，并把不同视频里的知识连起来。
+**See the dots. Connect them.**
 
-按 [需求文档](docs/prd.md) 和 [技术方案](docs/tech-plan.md) 实现：通用视频分析底座 → 学习内容生成 → 学习运行时 → AI Coach → 知识地图。
+English | [简体中文](README.zh-CN.md)
 
-## 结构
+![Python](https://img.shields.io/badge/python-3.11%2B-3776ab)
+![Node](https://img.shields.io/badge/node-20%2B-339933)
+![Status](https://img.shields.io/badge/status-pre--alpha-orange)
 
+SeeDots adds an AI learning layer to the lecture video you are already watching. At the right
+moment it offers a learning action you can check (a question, a prediction, an experiment, a
+rewatch), every answer points back to an exact moment in the video, and concepts you meet in
+different videos are linked into one knowledge map.
+
+> **Status:** pre-alpha, built for a competition MVP (target: November 2026). APIs and data
+> models change without notice. Video content is English-only for now.
+
+## Table of contents
+
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [Running the tests](#running-the-tests)
+- [Project structure](#project-structure)
+- [Documentation](#documentation)
+- [Design principles](#design-principles)
+- [Known gaps and roadmap](#known-gaps-and-roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgements](#acknowledgements)
+
+## Features
+
+- **Any video in.** Add a YouTube link (official embedded player, captions only, never
+  downloaded), upload a file with optional captions, or grab a video from a web page you have the
+  rights to use. Videos without captions go through speech recognition if configured.
+- **Questions prepared before you need them.** Each chapter is turned into concepts and a pool
+  of validated items: single and multiple choice, find the error, predict, ordering and matching.
+  Every item cites the transcript sentences that support it.
+- **Interruptions that respect you.** The player watches for natural pauses, rewinds, skips and
+  "confused" marks. The front end decides *when* an interruption is acceptable (rate limit,
+  focus mode, muting after dismissals); the backend decides *what* to show.
+- **AI Coach.** A streaming tutor that answers about the moment you are at, cites clickable
+  timestamps, flags anything not from the video, and can look up where you met a concept in
+  your other videos. Answers render as Markdown with LaTeX.
+- **Interactive scenes.** Predict, try, observe, explain. L1 scenes are configured prebuilt
+  components (function plots, iterations) checked by code; L2 scenes are generated on request by
+  a coding agent and run in a locked-down sandbox only after passing scripted checks.
+- **Knowledge map.** Concepts are merged across videos into a global library; you get a map,
+  concept pages, search, and knowledge cards you confirm yourself.
+- **Observable model use.** Every model call goes through one gateway with versioned prompts,
+  typed outputs, caching, budgets, and a usage log (`GET /api/usage`).
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Web[Web app · Next.js :3000]
+    P[Player + dot rail] --- POL[Intervention policy]
+    P --- LAB[Scene host]
+    P --- COACHUI[Coach]
+  end
+  subgraph Learning[Learning backend · FastAPI :8000]
+    INBOX[Inbox] --> PIPE[Chapter pipeline]
+    PIPE --> LIB[Concept library]
+    PIPE --> POOL[Item pool]
+    PIPE --> SCN[Scenes L1/L2]
+    RT[Runtime] --> POOL
+    CO[Coach]
+  end
+  subgraph Media[Video analysis foundation · FastAPI :8001]
+    SRC[Source adapters] --> PROC[Processor pipeline]
+    PROC --> EV[(Evidence)]
+    PROC --> OUT[Outbox + webhooks]
+  end
+  OUT -- signed webhooks --> INBOX
+  INBOX -- pull API --> EV
+  Web -- REST + SSE --> Learning
+  SCN -. runs generated code .-> SBX[Sandbox]
 ```
-apps/web/                    Next.js 前端（只做前端，业务全部走学习后端）
-  components/DotRail.tsx     视频时间线：章节、概念、标记、播放头
-  lib/policy.ts              介入策略（何时可以打扰：自然停顿、频率、专注模式、连续忽略静音）
-services/
-  seedots/common/            跨服务内核
-    contracts.py             证据单元、事件信封、签名
-    db.py                    SQLAlchemy 内核（命名规则、可移植枚举、JSON/JSONB、UoW）
-    llm/                     Pydantic AI 网关：提示词版本、类型化输出、修复重试、缓存、预算、usage_logs
-    workflow.py, temporal.py 工作流端口：进程内引擎 / 通用 Temporal 工作流，跑同一套步骤
-  seedots/media/             视频分析底座（独立服务 :8001，领域无关）
-    sources.py               来源：上传 / YouTube（只读字幕，不下载）/ 网页（grabber + 权利声明）
-    processors.py            可插拔处理器：fetch → transcript(字幕或 ASR) → outline → publish → keyframes
-    webhooks.py              订阅、签名投递、退避、死信、重放；/v1/events 拉取兜底
-  seedots/learning/          学习后端（:8000）
-    catalog.py               视频镜像、章节、证据快照、收件箱（幂等、乱序容忍）
-    concepts.py              全局概念库：精确匹配 → 向量召回 + 模型判定 → 待审候选；合并与回滚
-    pipeline.py              每章：快照 → 概念 → 题目池 → 补缺
-    runtime.py               按信号限定候选动作；模型优先、规则兜底并全量记录；评分与掌握度
-    coach.py                 预构建上下文 + 白名单工具（本视频上下文、跨视频概念检索）+ 证据引用
-    knowledge.py             知识地图、概念页、知识卡片（草稿→用户确认）、搜索
-    scenes/                  交互场
-      expr.py                安全表达式语言（前端 lib/expr.ts 同一套语法）
-      spec.py                L1：function_plot / iteration 组件配置、不变量校验、预测答案由代码计算
-      kit.py                 Scene Kit：L2 代码唯一可用的接口、静态规则、运行页（CSP + 沙箱）
-      sandbox.py             沙箱端口 + 脚本化交互闸门（设置每个参数、读观测、截图、判空白）
-      service.py             L1 由流水线生成；L2 由 Pydantic AI 编码智能体按需生成 → 复核 → 截图审查 → 发布
-  scenekit/                  本机无头 Chromium 沙箱（Node + playwright-core）
-  grabber/                   网页视频抓取（来自 Kiwi/mediagrab，Node）
-  migrations/                Alembic，每个服务一套
-docs/prd.md                  需求文档（做什么，R01–R27）
-docs/tech-plan.md            技术方案（怎么做，含需求追溯；和代码一起维护）
-docs/api.md                  接口文档（与路由由测试保证一致）
-docs/database.md             数据库设计
-docs/progress.md             开发进度：任务、里程碑、周报
-```
 
-## 快速开始（macOS）
+1. The **foundation** (`services/seedots/media`) turns any video into time-stamped *evidence*
+   (sentences, chapters, keyframes). It knows nothing about learning.
+2. The **learning backend** (`services/seedots/learning`) consumes chapter events and generates
+   concepts, items and scenes offline, chapter by chapter, starting from the playback position.
+3. While you watch, the **runtime** only looks things up: it picks an action and an item from
+   the pre-built pool. Online model calls are limited to the Coach, action selection and
+   knowledge-card drafts.
 
-需要 Python 3.11+、Node 20+、ffmpeg。
+Both services own their own database, workflows and model gateway, and talk only over HTTP and
+signed webhooks. See the [technical plan](docs/tech-plan.md) for the full design.
+
+## Getting started
+
+### Prerequisites
+
+- macOS or Linux
+- Python 3.11+
+- Node.js 20+
+- ffmpeg
+- Google Chrome (only for L2 interactive scenes, which use it headlessly)
+- An API key for an OpenAI-compatible endpoint (default: [TokenRouter](https://www.tokenrouter.com)).
+  Without a key you can still run everything against an offline fake model.
+
+### Install
 
 ```bash
-git pull                         # 在 ~/workSpace/seedots
-cp .env.example .env             # 填 SEEDOTS_LLM_API_KEY；没有密钥时把 SEEDOTS_LLM_FAKE 设为 1
+git clone https://github.com/JerryLinyx/seedots.git
+cd seedots
+cp .env.example .env            # set SEEDOTS_LLM_API_KEY, or SEEDOTS_LLM_FAKE=1 to run offline
+
+# backend
 cd services && python3 -m venv .venv && .venv/bin/pip install -e '.[dev]' && cd ..
+
+# web app
 cd apps/web && npm install && cd ..
-(cd services/grabber && npm install)   # 可选：要从网页添加视频时需要
-(cd services/scenekit && npm install)  # 可选：L2 交互场需要（用本机的 Google Chrome）
-scripts/dev.sh                   # 底座 :8001，学习后端 :8000，前端 :3000
+
+# optional
+(cd services/scenekit && npm install)   # L2 interactive scenes (headless Chrome sandbox)
+(cd services/grabber && npm install)    # adding videos from web pages
 ```
 
-打开 http://localhost:3000 。首页已填好示例 YouTube 链接；也可以上传自己的视频（字幕可选，没有字幕时需要配置 `SEEDOTS_ASR_MODEL`）。
+### Run
 
-测试（离线，不需要密钥）：
+```bash
+scripts/dev.sh
+```
+
+This starts the foundation on `:8001`, the learning backend on `:8000` and the web app on
+`:3000`. Open <http://localhost:3000>; the home page has a sample YouTube link filled in.
+`Ctrl+C` stops all three.
+
+> If a service exits with `address already in use`, something else is still bound to that
+> port (for example an earlier run). Stop it and start `scripts/dev.sh` again.
+
+## Configuration
+
+All settings are environment variables, read from `.env` at the repository root. The most
+common ones are below; [`.env.example`](.env.example) lists and explains all of them.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SEEDOTS_LLM_API_KEY` | — | Key for the model endpoint |
+| `SEEDOTS_LLM_BASE_URL` | `https://api.tokenrouter.com/v1` | OpenAI-compatible base URL |
+| `SEEDOTS_LLM_MODEL` | `deepseek/deepseek-v4-flash-0731` | Default model for all tasks |
+| `SEEDOTS_LLM_FAKE` | `0` | `1` = offline fake model (development and tests only) |
+| `SEEDOTS_LLM_REASONING` | `auto` | Reasoning effort: `auto` (per task), `off`, `low`, `medium`, `high` |
+| `SEEDOTS_LLM_MAX_TOKENS` | — | Per-task output caps, e.g. `scene_code=48000,items=20000` |
+| `SEEDOTS_EMBED_MODEL` | — | Embeddings for concept recall (falls back to local lexical similarity) |
+| `SEEDOTS_ASR_MODEL` | — | Speech recognition for videos without captions |
+| `SEEDOTS_VLM_MODEL` | — | Vision model for the L2 screenshot review (skipped and labelled when unset) |
+| `SEEDOTS_SANDBOX` | `local` | Where L2 code runs: `local` (headless Chrome) or `off` |
+| `SEEDOTS_ACTION_SELECTOR` | `llm` | `llm` (falls back to rules on error) or `rule` |
+| `SEEDOTS_WORKFLOW_ENGINE` | `inprocess` | `inprocess` or `temporal` (`pip install -e '.[temporal]'`) |
+| `SEEDOTS_MEDIA_DB_URL`, `SEEDOTS_LEARNING_DB_URL` | SQLite in `data/` | PostgreSQL via `pip install -e '.[postgres]'` |
+
+Reasoning models count their thinking against the output cap. If a task fails with
+"token limit exceeded before any response", raise its cap with `SEEDOTS_LLM_MAX_TOKENS`.
+
+Prompts live in `services/seedots/*/prompts/<task>.v<N>.md`. Changing a prompt means adding a
+new version; the latest version is used unless a task pins one.
+
+## Running the tests
+
+The test suite runs offline with the fake model and needs no API key:
 
 ```bash
 cd services && .venv/bin/python -m pytest
 ```
 
-## 模型
+Sandbox tests run only when `services/scenekit` dependencies are installed; otherwise they are
+skipped. The web app has a type check:
 
-所有模型调用都经过 `common/llm`（Pydantic AI）。默认走 TokenRouter 的 OpenAI 兼容接口，模型 `deepseek/deepseek-v4-flash-0731`。`GET /api/usage`、`GET /v1/usage` 可以看到每次调用的任务、提示词版本、token、延迟和上下文清单。提示词在各服务的 `prompts/<task>.v<N>.md`，改提示词 = 新增版本。
+```bash
+cd apps/web && npm run typecheck
+```
 
-可选能力：
+## Project structure
 
-- `SEEDOTS_LLM_REASONING`：推理强度，`auto`（默认，按任务）/ `off` / `low` / `medium` / `high`。`SEEDOTS_LLM_MAX_TOKENS`：按任务覆盖输出上限，如 `scene_code=48000`。推理模型的思考也计入输出上限，遇到“token limit exceeded before any response”时调大对应任务。
+```
+apps/web/                    Next.js web app (front end only; all logic is in the learning backend)
+  components/                Player, dot rail, coach, item and scene views, knowledge map
+  lib/policy.ts              Intervention policy: when an interruption is acceptable
+  lib/expr.ts                Expression language for L1 scenes (same grammar as the backend)
+services/
+  seedots/common/            Shared core: evidence contracts, DB, model gateway (llm/), workflow port
+  seedots/media/             Video analysis foundation (:8001): sources, processors, webhooks
+  seedots/learning/          Learning backend (:8000)
+    catalog.py               Video mirror, chapters, evidence snapshots, inbox
+    concepts.py              Global concept library: match, recall + judge, merge and rollback
+    pipeline.py              Per chapter: snapshot → concepts → items → gap fill → scene
+    item_types.py            Item type registry: payload, answer, validator, grader
+    runtime.py               Action selection (model first, rules as the floor), grading, mastery
+    coach.py                 Context pack, whitelisted tools, citations
+    knowledge.py             Knowledge map, concept pages, cards, search
+    scenes/                  L1 specs, Scene Kit, sandbox port, L2 workflow
+    prompts/                 Versioned prompts
+  scenekit/                  Local headless-Chrome sandbox for L2 scenes (Node + playwright-core)
+  grabber/                   Web page video grabber (Node)
+  migrations/                Alembic migrations, one set per service
+  tests/                     Offline test suite
+scripts/dev.sh               Starts all three processes
+docs/                        Product and engineering documents (in Chinese)
+```
 
-- `SEEDOTS_EMBED_MODEL`：概念召回用的向量模型（不配则用本地字面相似度，只能识别拼写变体）。
-- `SEEDOTS_ASR_MODEL`：没有字幕的上传 / 网页视频走语音识别（OpenAI 兼容 `/audio/transcriptions`）。
-- `SEEDOTS_VLM_MODEL`：L2 交互场截图审查用的视觉模型；不配置时这一关记为“跳过”，界面上会写明。
-- `SEEDOTS_WORKFLOW_ENGINE=temporal`：用 Temporal 跑工作流（`pip install -e '.[temporal]'`，再分别启动 `python -m seedots.common.temporal media|learning`）。
-- `SEEDOTS_*_DB_URL`：换成 PostgreSQL（`pip install -e '.[postgres]'`）。
+## Documentation
 
-## 和技术方案的差异（有意的，后续替换）
+The engineering documents are written in Chinese and are maintained together with the code.
 
-| 方案 | 现在 | 下一步 |
+| Document | What it covers |
+| --- | --- |
+| [`docs/prd.md`](docs/prd.md) | Product requirements (R01–R27): what to build |
+| [`docs/tech-plan.md`](docs/tech-plan.md) | Technical plan: how it is built, requirement traceability, implementation status |
+| [`docs/api.md`](docs/api.md) | HTTP API of both services (a test keeps it in sync with the routes) |
+| [`docs/database.md`](docs/database.md) | Schema design and migration history |
+| [`docs/progress.md`](docs/progress.md) | Milestones, task board and weekly reports |
+
+## Design principles
+
+These hold across the codebase; changes that break them will not be accepted.
+
+1. **Time has one source.** Models never output seconds; they cite evidence IDs such as
+   `s0042`, and timestamps come from the evidence.
+2. **Online paths only look things up.** No questions are generated and no video is parsed while
+   the learner waits; models only choose and write short text online. (L2 scenes are an explicit,
+   visibly progressing request.)
+3. **Facts are computed by code.** Grading, scene results and predictions are deterministic code;
+   model output must pass validation to be published, and only human-reviewed items count toward
+   mastery.
+4. **YouTube is embedded, never downloaded.** Only the official player is used, unobscured and
+   unmodified.
+
+## Known gaps and roadmap
+
+Intentional differences from the technical plan, to be replaced:
+
+| Plan | Today | Next |
 | --- | --- | --- |
-| YouTube：模型直读链接 + 第二遍画面证据 | 用 yt-dlp（不下载视频）只读元数据和平台字幕轨；关键帧只对自有文件生成 | 换成 Data API + oEmbed + 模型读链接（PRD §11 决议，见方案 §10）；接视觉模型后增加区域证据处理器 |
-| L2 托管代码沙箱 | 本机无头 Chromium（同一 JSON 协议） | 换成托管沙箱，只需实现 `Sandbox.run` |
-| 托管认证 | 请求头 `X-SeeDots-User`（默认 `demo`） | 接认证服务，`current_user` 一处替换 |
-| pgvector | 向量存 JSON，召回在应用里算 | 见 `docs/database.md` |
-| 评测平台 / 金标集 | 未做 | 20 个视频金标 + 校准过的模型裁判 |
+| YouTube read by the model from the link, plus visual evidence | Metadata and caption tracks via yt-dlp (no video download); keyframes only for files we hold | Data API + oEmbed + model reading the link; region evidence once a vision model is wired in |
+| Hosted code sandbox for L2 | Local headless Chrome (same JSON protocol) | A hosted sandbox implementing `Sandbox.run` |
+| Hosted authentication | `X-SeeDots-User` header (default `demo`) | An auth provider, replacing `current_user` |
+| pgvector | Vectors stored as JSON, recall computed in the app | See [`docs/database.md`](docs/database.md) |
+| Evaluation gate | Not built | A 20-video golden set and a calibrated LLM judge |
 
-Temporal 适配层和 OpenAI 兼容模型这两条路径在本仓库的离线测试里没有运行（测试环境没有 Temporal 服务和外网），首次在本机启用时请留意日志。
+The Temporal adapter has not been run against a real Temporal server yet; watch the logs the
+first time you enable it. The task board in [`docs/progress.md`](docs/progress.md) tracks what
+is planned next.
 
-## 设计约束（不要破坏）
+## Contributing
 
-1. 时间只有一个来源：模型只引用证据 ID（如 `s0042`），不输出秒数。
-2. 在线只查表：出卡片时不现场生成题目；模型只在 Coach 和动作选择里实时调用。
-3. 事实由代码算：评分在服务端；自动校验通过的学习项可以用，但只有人工审过的才计入掌握。
-4. YouTube 只用官方嵌入播放器，不遮挡、不修改、不下载视频。
+SeeDots is developed by a small team and is not yet ready for outside contributions. If you
+want to work on it:
 
-## 交互场
+- Read [`CLAUDE.md`](CLAUDE.md) for the working conventions (it applies to human and AI
+  contributors alike).
+- A change to the design (architecture, data model, interfaces, invariants, defaults that matter)
+  updates [`docs/tech-plan.md`](docs/tech-plan.md) in the same commit, with a line under
+  “变更记录”. A new migration adds a line to [`docs/database.md`](docs/database.md).
+- Code, comments and commit messages are in English; documents are in Chinese.
+- Every model call goes through the gateway in `services/seedots/common/llm`; prompts are
+  versioned files.
+- Run the test suite before you push.
 
-每个交互场都走同一个流程：先预测，再动手调参数，看结果，最后用自己的话解释（可以交给 Coach 检查）。
+## License
 
-- **L1**：内容流水线在每章最后一步，让模型为预置组件填配置（函数图像 / 迭代过程，例如梯度下降）。代码校验不变量（表达式只用白名单语法、全量程都能画、预测会产生可见变化），并用同一套表达式计算预测的正确答案；前端用 `lib/expr.ts` 画图，两边结果一致。
-- **L2**：学习者在“Try it yourself”里描述想玩的东西。Pydantic AI 编码智能体写 Scene Kit 代码，反复调用 `run_checks`（静态规则 + 沙箱里的脚本化交互），通过后工作流再独立复核一遍、截图交给视觉模型审查，然后发布。每一步都实时显示在页面上。代码只在 `sandbox="allow-scripts"` 的 iframe 里运行，页面本身带 CSP sandbox 头，禁止网络、存储和访问宿主页面。
-- 交互场挂在视频上，跟视频的共享范围一致；交互事件（`scene.predict / set_param / observe / explain`）进入学习事件日志。
+No license has been chosen yet, so all rights are reserved by the authors for now.
+`services/grabber` is based on mediagrab, which is MIT-licensed.
+
+## Acknowledgements
+
+- [Pydantic AI](https://ai.pydantic.dev) for the agent and gateway layer
+- [FastAPI](https://fastapi.tiangolo.com), [SQLAlchemy](https://www.sqlalchemy.org) and
+  [Alembic](https://alembic.sqlalchemy.org) for the services
+- [Next.js](https://nextjs.org), [react-markdown](https://github.com/remarkjs/react-markdown)
+  and [KaTeX](https://katex.org) for the web app
+- [Playwright](https://playwright.dev) for the scene sandbox
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) for caption tracks
