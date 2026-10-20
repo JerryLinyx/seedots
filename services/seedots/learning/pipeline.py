@@ -75,6 +75,17 @@ class ContentRunner:
         self.engine.start(WORKFLOW, f"content-{chapter_id}-{PIPELINE_VERSION}",
                           {"media_id": media_id, "chapter_id": chapter_id})
 
+    def retry_failed(self, media_id: str) -> int:
+        """Restart failed chapters of a video. Finished steps are kept, so a run resumes where it stopped."""
+        with self.db.session() as s:
+            ids = s.scalars(sa.select(ContentRun.chapter_id).join(Chapter)
+                            .where(Chapter.media_id == media_id, Chapter.retired_at.is_(None),
+                                   ContentRun.pipeline_version == PIPELINE_VERSION,
+                                   ContentRun.status == RunStatus.FAILED)).all()
+        for chapter_id in ids:
+            self.chapter_ready(media_id, chapter_id)
+        return len(ids)
+
     def resume(self) -> int:
         with self.db.session() as s:
             rows = s.execute(sa.select(Chapter.media_id, ContentRun.chapter_id).join(Chapter)

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { api, ApiError, fmt } from "@/lib/api";
 import type { AttemptResult, Item } from "@/lib/types";
+import { Markdown } from "./Markdown";
 
 type Props = {
   item: Item;
@@ -166,7 +167,7 @@ export function ItemView({ item, decisionId, onSeek, onAnswered }: Props) {
       {result && (
         <div className={`feedback ${result.correct ? "ok" : "no"}`} role="status">
           <strong>{result.correct ? "That's it." : "Not quite."}</strong>
-          {ans.explanation && <span>{ans.explanation}</span>}
+          {ans.explanation && <Markdown className="inline" text={ans.explanation} />}
           {result.evidence.length > 0 && (
             <div className="evidence">
               <span style={{ color: "var(--ink-3)" }}>Where the video says it:</span>

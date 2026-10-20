@@ -25,10 +25,11 @@ from typing import Any, Literal, Protocol
 os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 from pydantic import BaseModel  # noqa: E402
-from pydantic_ai import Agent, NativeOutput, PromptedOutput, ToolOutput  # noqa: E402
+from pydantic_ai import Agent, AgentRunResultEvent, NativeOutput, PromptedOutput, ToolOutput  # noqa: E402
 from pydantic_ai.exceptions import ModelHTTPError, UnexpectedModelBehavior  # noqa: E402
-from pydantic_ai.messages import (BinaryContent, ModelMessage, ModelRequest, ModelResponse,  # noqa: E402
-                                  TextPart, UserPromptPart)
+from pydantic_ai.messages import (BinaryContent, FunctionToolCallEvent, ModelMessage, ModelRequest,  # noqa: E402
+                                  ModelResponse, PartDeltaEvent, PartStartEvent, TextPart, TextPartDelta,
+                                  UserPromptPart)
 from pydantic_ai.usage import UsageLimits  # noqa: E402
 from pydantic_ai.models import Model  # noqa: E402
 from pydantic_ai.toolsets import FunctionToolset  # noqa: E402
@@ -152,8 +153,9 @@ class Gateway:
         self.usage_sink = usage_sink
         self.cache = cache
         self._budget = _Budget()
-        self._agents: dict[tuple[str, int], Agent] = {}
-        self._lock = threading.Lock()
+        # Agents hold an async HTTP client bound to the event loop that first used it. Workflow
+        # threads each run their own loop (run_sync), so agents are cached per thread.
+        self._local = threading.local()
         self.reasoning = reasoning
         self.max_tokens = max_tokens or {}
         self._reasoning_rejected = False
@@ -165,16 +167,16 @@ class Gateway:
         return self.tasks[task]
 
     def _agent(self, spec: TaskSpec, prompt: Prompt) -> Agent:
+        agents: dict[tuple[str, int], Agent] = self._local.__dict__.setdefault("agents", {})
         key = (spec.name, prompt.version)
-        with self._lock:
-            if key not in self._agents:
-                self._agents[key] = Agent(
-                    self.model_factory(spec.name),
-                    output_type=_output_spec(spec),
-                    retries={"output": spec.output_retries, "tools": 1},
-                    name=spec.name,
-                )
-            return self._agents[key]
+        if key not in agents:
+            agents[key] = Agent(
+                self.model_factory(spec.name),
+                output_type=_output_spec(spec),
+                retries={"output": spec.output_retries, "tools": 1},
+                name=spec.name,
+            )
+        return agents[key]
 
     def _settings(self, spec: TaskSpec, max_tokens: int | None = None) -> dict[str, Any]:
         out: dict[str, Any] = {"temperature": spec.temperature, "timeout": spec.timeout,
@@ -282,14 +284,30 @@ class Gateway:
         try:
             while True:
                 try:
-                    async with self._agent(spec, prompt).run_stream(
+                    # run_stream_events, not run_stream: run_stream stops at the first text, so a reply
+                    # that says "let me check" and then calls a tool would end there.
+                    async with self._agent(spec, prompt).run_stream_events(
                             user, instructions=system, message_history=history_messages(history),
-                            toolsets=toolsets, model_settings=settings) as res:
-                        async for delta in res.stream_text(delta=True):
-                            if rec.first_token_ms is None:
-                                rec.first_token_ms = int((time.perf_counter() - started) * 1000)
-                            yield delta
-                        usage = res.usage
+                            toolsets=toolsets, model_settings=settings) as events:
+                        wrote, after_tool = False, False
+                        async for ev in events:
+                            delta = ""
+                            if isinstance(ev, PartStartEvent) and isinstance(ev.part, TextPart):
+                                delta = ev.part.content
+                                if after_tool and wrote and delta:
+                                    delta = "\n\n" + delta.lstrip()   # text after a tool call: new paragraph
+                                after_tool = after_tool and not delta
+                            elif isinstance(ev, PartDeltaEvent) and isinstance(ev.delta, TextPartDelta):
+                                delta = ev.delta.content_delta
+                            elif isinstance(ev, FunctionToolCallEvent):
+                                after_tool = True
+                            elif isinstance(ev, AgentRunResultEvent):
+                                usage = ev.result.usage
+                            if delta:
+                                if rec.first_token_ms is None:
+                                    rec.first_token_ms = int((time.perf_counter() - started) * 1000)
+                                wrote = True
+                                yield delta
                     break
                 except Exception as exc:
                     # retry only while nothing has reached the caller

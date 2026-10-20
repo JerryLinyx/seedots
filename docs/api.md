@@ -45,6 +45,7 @@
 | `DELETE /api/videos/{media_id}` | 从我的视频库移除（不删共享内容） | — | `ok` |
 | `PUT /api/videos/{media_id}/position` | 记录续播位置 | `t` | `ok` |
 | `GET /api/videos/{media_id}/progress` | **SSE**：解析与内容生成进度，约 1.5 秒推一次变化 | — | 事件 `progress`、`end`；数据为 `status`、`detail`、`chapters_total / done / failed`、`items` |
+| `POST /api/videos/{media_id}/retry` | 重新生成内容失败的章节；已完成的步骤保留，从失败处继续 | — | `restarted`（重新开始的章节数） |
 | `GET /api/videos/{media_id}/pack` | 学习页一次取全：播放器需要的一切，不含答案 | — | 见下方“学习包” |
 | `GET /api/videos/{media_id}/file` | 我们持有的视频文件（上传、网页来源），支持 Range | `?u=` | 视频流 |
 | `GET /api/videos/{media_id}/frames/{name}` | 关键帧图片（`k0001.jpg`） | `?u=` | JPEG |
@@ -88,7 +89,7 @@
 | `predict_window` | 揭晓句前 25 秒内 | `none`、`predict` |
 | `concept_seen_before` | 出现别的视频里学过的概念 | `none`、`link` |
 | `confused_mark` | 点了“疑惑” | `explain` |
-| `manual` | 用户点“Quiz me” | `none`、`quiz`、`explain`、`rewatch`、`check_in` |
+| `manual` | 用户点“Quiz me” | `quiz`；本章没有未作答的题时 `none`。和 `confused_mark` 一样由规则直接回答，不调用模型 |
 
 动作附带的内容：`quiz` / `predict` → `item`（学习项）；`rewatch` → `rewatch`（`evidence_id`、`t0`、`t1`、`item_id`）；`link` → `link`（`id`、`concept_id`、`concept`、`occurrence_id`、`media_id`、`title`、时间）；`explain` 由前端打开 Coach。
 
@@ -109,6 +110,8 @@
 | --- | --- | --- | --- |
 | `POST /api/coach` | **SSE**：基于当前时刻的回答 | `media_id`、`t`（当前播放时间）、`question`（≤ 2000 字） | 事件 `delta`（`text` 片段）、`done`（`message_id`、`citations[]`）、`error`（`message`） |
 | `GET /api/coach/{media_id}` | 我在这个视频上的对话历史 | — | 消息数组，带引用 |
+
+Coach 的回答正文是 Markdown（公式为 `\(...\)` / `\[...\]`），引用标记可能写成 `[s0042]`、`[s0063, s0069]` 或 `[s0066–s0069]`，前端与服务端按同一语法解析。
 
 **引用 `citations[]`**：`kind` 为 `evidence` 时带 `ref`（回答正文里的标记，如 `s0042`、`o1`）、`id`、`revision`、`t0`、`t1`、`media_id`（`media_id` 不是当前视频时，就是 Coach 通过概念检索引用的其他视频）；`kind` 为 `external` 时表示视频之外的知识，界面标“not from the video”。
 
@@ -212,4 +215,5 @@
 
 | 日期 | 修改 |
 | --- | --- |
+| 2026-10-20 | 新增 `POST /api/videos/{media_id}/retry`；`manual` 信号只返回 `quiz` / `none`；Coach 正文为 Markdown，引用标记支持分组与区间 |
 | 2026-10-20 | v1.0：首版，覆盖学习后端 40 个、底座 19 个接口；`POST /api/marks` 的时间点往前补 5 秒 |

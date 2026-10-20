@@ -117,7 +117,7 @@ def learning_brain(task: str, system: str, user: str):
                             "observation": "behaviour", "options": ["settles down", "keeps bouncing", "blows up"]}}
         if "<tool run_checks>" not in user:
             return FakeToolCall("run_checks", decl)
-        return json.dumps(decl)
+        return FakeToolCall("final_result", decl)          # scene_code returns its answer as a tool call
     if task == "scene_review":
         return json.dumps({"ok": True, "score": 4, "problems": []})
     return "{}"

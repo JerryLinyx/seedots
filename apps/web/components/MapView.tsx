@@ -6,6 +6,7 @@ import { api, ApiError, fmt } from "@/lib/api";
 import type { ConceptPage, KnowledgeMap, SearchResult } from "@/lib/types";
 import { Brand } from "./Brand";
 import { Constellation } from "./Constellation";
+import { Markdown } from "./Markdown";
 
 const LEVELS = ["Not checked yet", "Recalls it", "Understands it", "Applies it"];
 
@@ -71,7 +72,7 @@ function ConceptDrawer({ id, onClose }: { id: string; onClose: () => void }) {
           {editing ? (
             <textarea className="field" value={body} onChange={(e) => setBody(e.target.value)} aria-label="Card text" />
           ) : (
-            <div className="body">{c.card.body.replace(/\s?\[(s\d{4})\]/g, "")}</div>
+            <Markdown className="body" text={c.card.body} />
           )}
           <div className="icard-actions" style={{ marginTop: 12 }}>
             {editing ? (

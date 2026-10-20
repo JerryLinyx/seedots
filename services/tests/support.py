@@ -19,6 +19,9 @@ def test_settings(tmp: Path, **over):
         webhook_secret="s3cret-test", action_selector="llm", llm_reasoning="auto", llm_max_tokens={}, **over)
 
 
+test_settings.__test__ = False   # a helper, not a test (pytest collects it where it is imported)
+
+
 def make_video(path: Path, seconds: int = 30) -> Path:
     """A small real video with hard scene changes (for keyframes), or a stub if no ffmpeg."""
     if shutil.which("ffmpeg"):

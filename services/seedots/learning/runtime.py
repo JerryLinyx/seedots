@@ -31,16 +31,20 @@ SignalName = Literal["rewind_repeat", "long_pause", "chapter_end", "skip_ahead",
 
 
 # Which actions make sense for each signal; the model only ever chooses among these.
+# Explicit learner requests (EXPLICIT) are not second-guessed by the model: the rules answer them.
 ALLOWED: dict[str, list[str]] = {
     "chapter_end": ["none", "quiz", "check_in", "rewatch", "explain"],
     "skip_ahead": ["none", "quiz", "check_in", "rewatch"],
-    "manual": ["none", "quiz", "explain", "rewatch", "check_in"],
+    "manual": ["none", "quiz"],          # the learner pressed "Quiz me": a question, or none if none is left
     "rewind_repeat": ["none", "check_in", "rewatch", "explain", "quiz"],
     "long_pause": ["none", "check_in", "explain", "quiz"],
     "predict_window": ["none", "predict"],
     "concept_seen_before": ["none", "link"],
     "confused_mark": ["explain"],
 }
+
+
+EXPLICIT = {"confused_mark", "manual"}
 
 
 class Signal(BaseModel):
@@ -239,8 +243,8 @@ class Runtime:
         rule = self.rule.select(ctx)
         choice, selector, error = rule, self.rule.name, None
         started = time.perf_counter()
-        # 2. the model (no transaction held open). An explicit "confused" mark always opens the coach.
-        if self.use_llm and self.llm is not None and signal.kind != "confused_mark":
+        # 2. the model (no transaction held open). Explicit requests ("confused" mark, "Quiz me") skip it.
+        if self.use_llm and self.llm is not None and signal.kind not in EXPLICIT:
             try:
                 with self.db.session() as rs:
                     choice, selector = self.llm.select(ctx, rs), self.llm.name

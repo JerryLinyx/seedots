@@ -6,6 +6,7 @@ The front end mirrors this with one renderer per `type`.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -98,13 +99,30 @@ def _leaks(hints: list[str], answer_text: str) -> bool:
     return bool(a) and len(a) > 3 and any(a in h.lower() for h in hints)
 
 
+_REFERS_TO_OPTIONS = re.compile(r"\b(all|none|both|neither) of (the )?(above|these|them)\b|\b[a-d] and [a-d]\b",
+                                re.IGNORECASE)
+
+
+def _shuffled(stem: str, options: list[str], correct: list[int]) -> tuple[list[str], list[int]]:
+    """Models put the right answer in the same slot far too often, so options are shuffled
+    deterministically (seeded by the stem). Options that refer to other options keep their order."""
+    if any(_REFERS_TO_OPTIONS.search(o) for o in options):
+        return options, correct
+    import random
+
+    perm = list(range(len(options)))
+    random.Random(stem).shuffle(perm)
+    return [options[i] for i in perm], sorted(perm.index(i) for i in correct)
+
+
 def _single_from(d: ItemDraft) -> tuple[BaseModel, BaseModel]:
     p = ChoicePayload(stem=d.stem, options=d.options or [], hints=d.hints)
     if not isinstance(d.answer, int) or not 0 <= d.answer < len(p.options):
         raise InvalidItem("answer must be an option index")
     if _leaks(p.hints, p.options[d.answer]):
         raise InvalidItem("a hint gives the answer away")
-    return p, SingleAnswer(index=d.answer, explanation=d.explanation)
+    p.options, (index,) = _shuffled(p.stem, p.options, [d.answer])
+    return p, SingleAnswer(index=index, explanation=d.explanation)
 
 
 def _multi_from(d: ItemDraft) -> tuple[BaseModel, BaseModel]:
@@ -113,7 +131,8 @@ def _multi_from(d: ItemDraft) -> tuple[BaseModel, BaseModel]:
     if not ans or len(set(ans)) != len(ans) or any(not isinstance(i, int) or not 0 <= i < len(p.options)
                                                    for i in ans):
         raise InvalidItem("answer must be a list of distinct option indices")
-    return p, MultiAnswer(indices=sorted(ans), explanation=d.explanation)
+    p.options, indices = _shuffled(p.stem, p.options, ans)
+    return p, MultiAnswer(indices=indices, explanation=d.explanation)
 
 
 def _ordering_from(d: ItemDraft) -> tuple[BaseModel, BaseModel]:

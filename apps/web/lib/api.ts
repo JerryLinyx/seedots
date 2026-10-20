@@ -102,6 +102,7 @@ export const api = {
   remove: (id: string) => req<{ ok: boolean }>(`/api/videos/${id}`, { method: "DELETE" }),
   position: (id: string, t: number) => req(`/api/videos/${id}/position`, { method: "PUT", body: json({ t }) }),
   pack: (id: string) => req<Pack>(`/api/videos/${id}/pack`),
+  retry: (id: string) => req<{ restarted: number }>(`/api/videos/${id}/retry`, { method: "POST" }),
   progress: (id: string) =>
     stream(`/api/videos/${id}/progress`) as Promise<AsyncGenerator<{ event: string; data: Progress }>>,
   events: (events: unknown[]) => req<{ accepted: number }>("/api/events", { method: "POST", body: json({ events }) }),

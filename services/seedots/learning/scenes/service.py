@@ -236,7 +236,7 @@ class SceneService:
             chapter_id, ask = row.chapter_id, row.request
         video, ch, sentences, concepts = self._chapter_context(chapter_id)
         self._progress(scene_id, "drafting", "Writing the interactive from this chapter")
-        attempts = {"n": 0}
+        attempts: dict[str, Any] = {"n": 0, "passed": None}
 
         def run_checks(code: str, engine: str, params: list[ParamDecl], predict: PredictDecl,
                        title: str = "", prompt: str = "") -> dict[str, Any]:
@@ -251,6 +251,8 @@ class SceneService:
                 return {"passed": False, "problems": [str(exc)[:300]]}
             rep = self._check(draft)
             rep.pop("_screenshot", None)
+            if rep["passed"]:
+                attempts["passed"], attempts["passed_n"] = draft, attempts["n"]
             self._progress(scene_id, "checking", "Draft passed" if rep["passed"] else
                            f"Draft needs fixes: {'; '.join(rep['problems'])[:200]}", attempt=attempts["n"])
             return rep
@@ -262,7 +264,12 @@ class SceneService:
                                                                       "something I can experiment with."},
                 tools=[run_checks], max_requests=AGENT_REQUESTS, manifest={"scene": scene_id})
         except LLMError as exc:
-            raise PermanentError(f"The scene agent could not finish: {exc}") from exc
+            # A draft that passed run_checks is kept even if the agent stumbles afterwards (e.g. it
+            # keeps re-checking until the request limit): verify re-runs every gate on it anyway.
+            if attempts["passed"] is None:
+                raise PermanentError(f"The scene agent could not finish: {exc}") from exc
+            out = attempts["passed"]
+            self._progress(scene_id, "checking", f"Using draft {attempts['passed_n']}, which passed")
         refs = [short(x.id) for x in sentences[:3]]
         self._done(scene_id, "draft", component=out.engine, title=out.title, spec=out.model_dump(),
                    generator=self.gateway.prompts.get("scene_code").tag)

@@ -1114,6 +1114,80 @@ img {
 .msg-bot {
   font: 400 var(--t-read) / 1.6 var(--serif);
 }
+/* model text rendered from Markdown (coach, cards, explanations) */
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote {
+  margin: 0 0 0.7em;
+}
+.md ul,
+.md ol {
+  padding-left: 1.3em;
+}
+.md li + li {
+  margin-top: 0.25em;
+}
+.md strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+.md code {
+  font: 400 0.88em/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--paper-2);
+}
+.md pre {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border-radius: var(--r-s);
+  background: var(--paper-2);
+}
+.md pre code {
+  padding: 0;
+  background: none;
+}
+.md blockquote {
+  padding-left: 12px;
+  border-left: 2px solid var(--line-2);
+  color: var(--ink-2);
+}
+.md .katex-display {
+  margin: 0.4em 0 0.8em;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.md .ext {
+  font-style: italic;
+  color: var(--ink-3);
+}
+.md.inline,
+.md.inline > p {
+  display: inline;
+}
+.quiz-note {
+  align-self: center;
+  font-size: var(--t-s);
+  color: var(--ink-2);
+}
+.status-line .link-btn {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
 .msg-bot .ext {
   font-style: italic;
   color: var(--ink-3);

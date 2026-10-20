@@ -27,8 +27,10 @@ from seedots.learning.models import (Attempt, Chapter, ChatRole, CitationKind, C
                                      ConceptAlias, EvidenceSnapshot, ItemConcept, LearningItem, Mark, MessageCitation,
                                      Occurrence, OccurrenceEvidence, Video)
 
-CITE = re.compile(r"\[(s\d{4}|o\d{1,2})\]")
-EXTERNAL = "(not from the video)"
+REF = re.compile(r"s\d{4}|o\d{1,2}")
+# One bracket may hold several ids: [s0042], [s0063, s0069], [s0066–s0069] (ranges cite both ends).
+CITE = re.compile(r"\[((?:s\d{4}|o\d{1,2})(?:\s*(?:,|;|-|–|—|and)\s*(?:s\d{4}|o\d{1,2}))*)\]")
+EXTERNAL = re.compile(r"\(\s*not from the video\s*:?\s*\)", re.IGNORECASE)   # models vary case / add a colon
 
 
 class CoachSession:
@@ -40,6 +42,17 @@ class CoachSession:
 
     def add(self, ref: str, snap: EvidenceSnapshot, media_id: str | None = None) -> None:
         self.refs.setdefault(ref, (snap.id, snap.revision, snap.t0, snap.t1, media_id))
+
+    def resolve_seen(self, text: str) -> None:
+        """Sentence ids the model saw in earlier turns are not in this turn's pack; any id that
+        really exists in this video is still a valid citation, so look those up."""
+        missing = {r for g in CITE.findall(text) for r in REF.findall(g) if r.startswith("s") and r not in self.refs}
+        if not missing:
+            return
+        with self.db.session() as s:
+            for row in current_sentences(s, self.media_id):
+                if short(row.id) in missing:
+                    self.add(short(row.id), row)
 
     # ------------------------------------------------------------------ tools (whitelist)
     def tools(self) -> list:
@@ -150,6 +163,7 @@ class Coach:
                                                manifest={"media_id": media_id, "t": t, "refs": len(cs.refs)}):
             text += delta
             yield {"type": "delta", "text": delta}
+        await asyncio.to_thread(cs.resolve_seen, text)
         citations = self._citations(cs, text)
         prompt_tag = self.gateway.prompts.get("coach", self.gateway.spec("coach").prompt_version).tag
 
@@ -168,13 +182,13 @@ class Coach:
     @staticmethod
     def _citations(cs: CoachSession, text: str) -> list[dict[str, Any]]:
         out = []
-        for ref in dict.fromkeys(CITE.findall(text)):
+        for ref in dict.fromkeys(r for group in CITE.findall(text) for r in REF.findall(group)):
             hit = cs.refs.get(ref)
             if hit:
                 eid, rev, t0, t1, other_media = hit
                 out.append({"kind": CitationKind.EVIDENCE.value, "ref": ref, "id": eid, "revision": rev, "t0": t0,
                             "t1": t1, "media_id": other_media or cs.media_id})
-        if EXTERNAL in text:
+        if EXTERNAL.search(text):
             out.append({"kind": CitationKind.EXTERNAL.value, "ref": "external"})
         return out
 

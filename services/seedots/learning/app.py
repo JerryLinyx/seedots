@@ -37,7 +37,8 @@ TASKS = [
     TaskSpec("coach", None, temperature=0.4, max_tokens=6000, timeout=90, reasoning="low"),
     TaskSpec("card", CardOut, temperature=0.3, max_tokens=6000, reasoning="low"),
     TaskSpec("scene_spec", SpecOut, temperature=0.2, max_tokens=12000, timeout=180, cache=True),
-    TaskSpec("scene_code", CodeOut, temperature=0.3, max_tokens=32000, timeout=420, output_retries=2),
+    TaskSpec("scene_code", CodeOut, temperature=0.3, max_tokens=32000, timeout=420, output_retries=2,
+             output_mode="tool"),
     TaskSpec("scene_review", ReviewOut, temperature=0.0, max_tokens=4000, timeout=90, reasoning="low"),
 ]
 

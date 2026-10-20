@@ -37,8 +37,17 @@ function progressText(p: Progress | null, pack: Pack | null): string | null {
   const total = p?.chapters_total ?? pack?.chapters.length ?? 0;
   const done = p?.chapters_done ?? pack?.chapters.filter((c) => c.content_status === "done").length ?? 0;
   if (!total) return status === "ready" ? null : "Reading the video";
-  if (done < total) return `Preparing questions, ${done} of ${total} chapters`;
+  const failed = p?.chapters_failed ?? pack?.chapters.filter((c) => c.content_status === "failed").length ?? 0;
+  if (done + failed < total) return `Preparing questions, ${done} of ${total} chapters`;
+  if (failed) return `Questions for ${failed} of ${total} chapters couldn't be prepared`;
   return null;
+}
+
+function failedChapters(p: Progress | null, pack: Pack | null): number {
+  const total = p?.chapters_total ?? pack?.chapters.length ?? 0;
+  const done = p?.chapters_done ?? pack?.chapters.filter((c) => c.content_status === "done").length ?? 0;
+  const failed = p?.chapters_failed ?? pack?.chapters.filter((c) => c.content_status === "failed").length ?? 0;
+  return failed && done + failed >= total ? failed : 0;
 }
 
 export function LearnView({ mediaId }: { mediaId: string }) {
@@ -54,6 +63,14 @@ export function LearnView({ mediaId }: { mediaId: string }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [playerError, setPlayerError] = useState<string | null>(null);
   const [flash, setFlash] = useState<MarkType | null>(null);
+  const [watch, setWatch] = useState(0);
+  const [note, setNote] = useState<string | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashNote = useCallback((text: string) => {
+    setNote(text);
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(() => setNote(null), 4000);
+  }, []);
 
   const player = useRef<PlayerHandle>(null);
   const coach = useRef<CoachHandle>(null);
@@ -81,8 +98,9 @@ export function LearnView({ mediaId }: { mediaId: string }) {
       const p = await loadPack();
       if (!p || !alive) return;
       const settled =
-        p.video.status === "failed" ||
-        (p.video.status === "ready" && p.chapters.length > 0 && p.chapters.every((c) => c.content_status === "done" || c.content_status === "failed"));
+        watch === 0 &&
+        (p.video.status === "failed" ||
+        (p.video.status === "ready" && p.chapters.length > 0 && p.chapters.every((c) => c.content_status === "done" || c.content_status === "failed")));
       if (settled) return;
       try {
         let lastDone = -1;
@@ -102,7 +120,19 @@ export function LearnView({ mediaId }: { mediaId: string }) {
     return () => {
       alive = false;
     };
-  }, [mediaId, loadPack]);
+  }, [mediaId, loadPack, watch]);
+
+  async function retryChapters() {
+    try {
+      const { restarted } = await api.retry(mediaId);
+      if (restarted) {
+        setProgress(null);
+        setWatch((w) => w + 1);
+      }
+    } catch {
+      /* the status line stays as it was */
+    }
+  }
 
   // ---------------------------------------------------------------- policy + decisions
   const settingsRef = useRef<Settings>({ focus_mode: false, max_cards_per_5min: 1, purpose: "interest", language: "en" });
@@ -113,7 +143,10 @@ export function LearnView({ mediaId }: { mediaId: string }) {
     async (signal: Signal, userInitiated: boolean) => {
       try {
         const d = await api.decide(mediaId, signal);
-        if (d.action === "none") return;
+        if (d.action === "none") {
+          if (signal.kind === "manual") flashNote("You've answered every question for this chapter.");
+          return;
+        }
         if (!userInitiated && !policyRef.current?.shownCard(d.action)) {
           void api.outcome(d.decision_id, "suppressed").catch(() => undefined);
           return;
@@ -126,7 +159,7 @@ export function LearnView({ mediaId }: { mediaId: string }) {
         /* a failed decision never interrupts watching */
       }
     },
-    [mediaId, log],
+    [mediaId, log, flashNote],
   );
 
   if (!policyRef.current) {
@@ -262,6 +295,11 @@ export function LearnView({ mediaId }: { mediaId: string }) {
           <span className={`status-line${failed ? " failed" : ""}`} role="status">
             <i aria-hidden="true" />
             {status}
+            {failedChapters(progress, pack) > 0 && !failed && (
+              <button className="link-btn" onClick={() => void retryChapters()}>
+                Retry
+              </button>
+            )}
           </span>
         )}
         <nav aria-label="Main">
@@ -389,6 +427,11 @@ export function LearnView({ mediaId }: { mediaId: string }) {
                   <button className="btn btn-primary" onClick={quizMe} disabled={!pack?.items.length} title="Quiz me on this chapter (q)">
                     Quiz me
                   </button>
+                  {note && (
+                    <span className="quiz-note" role="status">
+                      {note}
+                    </span>
+                  )}
                 </div>
               </div>
 

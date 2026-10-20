@@ -142,6 +142,39 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual("".join(asyncio.run(collect())), "one two three")
         self.assertIsNotNone(self.usage[-1].first_token_ms)
 
+    def test_stream_keeps_going_after_text_then_tool_call(self):
+        """Real models often say "let me check" and call a tool in the same reply; the answer
+        must continue after the tool instead of ending at the first text."""
+        import asyncio
+
+        from pydantic_ai.messages import ModelResponse, TextPart, ToolReturnPart
+        from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+
+        def answered(messages):
+            return any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts)
+
+        async def stream(messages, info):
+            if not answered(messages):
+                yield "Let me check."
+                yield {1: DeltaToolCall(name="lookup", json_args='{"q": "x"}', tool_call_id="t1")}
+            else:
+                yield "It is 42."
+
+        def call(messages, info):
+            return ModelResponse(parts=[TextPart("unused")])
+
+        gw = Gateway(prompts=self.lib, model_factory=lambda task: FunctionModel(call, stream_function=stream),
+                     model_name="fake", tasks=[TaskSpec("talk", None)], usage_sink=self.usage.append)
+
+        def lookup(q: str) -> str:
+            """Look something up."""
+            return "42"
+
+        async def collect():
+            return "".join([d async for d in gw.stream("talk", {"q": "hi"}, tools=[lookup])])
+        self.assertEqual(asyncio.run(collect()), "Let me check.\n\nIt is 42.")
+        self.assertEqual(self.usage[-1].requests, 2)
+
 
 class Steps:
     def __init__(self, fail_times=0, permanent=False):

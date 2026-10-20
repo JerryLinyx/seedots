@@ -1,40 +1,11 @@
 "use client";
 
-import { type FormEvent, type ReactNode, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { api, fmt } from "@/lib/api";
-import type { Citation, CoachMessage } from "@/lib/types";
+import { type FormEvent, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { api } from "@/lib/api";
+import type { CoachMessage } from "@/lib/types";
+import { Markdown } from "./Markdown";
 
 export type CoachHandle = { ask: (question: string) => void };
-
-const CITE = /\[(s\d{4}|o\d{1,2})\]|\(not from the video\)/g;
-
-function render(text: string, cites: Citation[], onSeek: (t: number, mediaId?: string) => void): ReactNode[] {
-  const out: ReactNode[] = [];
-  let last = 0;
-  for (const m of text.matchAll(CITE)) {
-    out.push(text.slice(last, m.index));
-    if (m[1]) {
-      const c = cites.find((x) => x.ref === m[1]);
-      out.push(
-        c && c.t0 != null ? (
-          <button key={m.index} className="time-chip" onClick={() => onSeek(c.t0!, c.media_id)}>
-            {fmt(c.t0)}
-            {c.ref.startsWith("o") ? " in another video" : ""}
-          </button>
-        ) : null,
-      );
-    } else {
-      out.push(
-        <span key={m.index} className="ext">
-          (not from the video)
-        </span>,
-      );
-    }
-    last = (m.index ?? 0) + m[0].length;
-  }
-  out.push(text.slice(last));
-  return out;
-}
 
 export const Coach = forwardRef<
   CoachHandle,
@@ -116,7 +87,7 @@ export const Coach = forwardRef<
             </div>
           ) : (
             <div key={i} className="msg-bot">
-              {render(m.content, m.citations, onSeek)}
+              <Markdown text={m.content} citations={m.citations} onSeek={onSeek} />
               {busy && i === log.length - 1 && <span className="caret" aria-label="Writing" />}
             </div>
           ),

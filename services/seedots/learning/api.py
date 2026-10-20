@@ -9,6 +9,7 @@
   GET  /api/videos/{id}                      status + content progress;  DELETE removes it from the library
   PUT  /api/videos/{id}/position             resume point
   GET  /api/videos/{id}/progress             SSE: analysis + generation progress
+  POST /api/videos/{id}/retry                restart chapters whose content generation failed
   GET  /api/videos/{id}/pack                 everything the player needs, no answers
   GET  /api/videos/{id}/file | /frames/{n}   media we hold (range requests pass through)
 
@@ -344,6 +345,12 @@ def create_app(container: LearningContainer | None = None) -> FastAPI:
                 cur = await asyncio.to_thread(snap)
         return StreamingResponse(gen(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/videos/{media_id}/retry")
+    def retry(media_id: str, user: str = Depends(current_user)) -> dict:
+        with db.session() as s:
+            _404(visible_video, s, media_id, user)
+        return {"restarted": c.runner.retry_failed(media_id)}
 
     @app.get("/api/videos/{media_id}/pack")
     def pack(media_id: str, user: str = Depends(current_user)) -> dict:
