@@ -121,6 +121,7 @@ class SceneLevel(enum.StrEnum):
 
 
 class SceneStatus(enum.StrEnum):
+    QUEUED = "queued"
     GENERATING = "generating"
     READY = "ready"
     FAILED = "failed"
@@ -534,6 +535,10 @@ class ItemRejection(Base):
 
 
 class SceneSpec(Base):
+    """An interactive scene for one chapter. L1 = config for a prebuilt component (made by the
+    content pipeline); L2 = code written by the scene agent on request, run only in a sandbox.
+    Scenes belong to the video, so they are shared exactly as widely as the video is."""
+
     __tablename__ = "scene_specs"
 
     id: Mapped[str] = mapped_column(sa.String(40), primary_key=True)
@@ -542,11 +547,33 @@ class SceneSpec(Base):
     concept_id: Mapped[str | None] = _fk("concepts.id", ondelete="SET NULL", nullable=True)
     level: Mapped[SceneLevel] = mapped_column(enum_type(SceneLevel, "scene_level"), nullable=False)
     component: Mapped[str] = mapped_column(sa.String(64), nullable=False)    # L1 component | L2 engine
-    spec: Mapped[dict[str, Any]] = mapped_column(nullable=False)             # L1 config | L2 bundle ref
+    title: Mapped[str] = mapped_column(sa.String(120), default="", nullable=False)
+    request: Mapped[str] = mapped_column(sa.Text, default="", nullable=False)  # what the learner asked for (L2)
+    spec: Mapped[dict[str, Any]] = mapped_column(nullable=False)             # L1 config | L2 {code, params, ...}
     status: Mapped[SceneStatus] = mapped_column(enum_type(SceneStatus, "scene_status"), nullable=False)
-    gates: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)  # invariants/protocol/vlm results
+    progress: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)  # {stage, attempt, log}
+    gates: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)  # invariants / protocol / review
+    error: Mapped[str | None] = mapped_column(sa.Text)
+    generator: Mapped[str] = mapped_column(sa.String(64), default="", nullable=False)
+    content_run_id: Mapped[int | None] = _fk("content_runs.id", ondelete="SET NULL", nullable=True)
     requested_by: Mapped[str | None] = _fk("users.id", ondelete="SET NULL", nullable=True)
     created_at: Mapped[datetime] = _now()
+    updated_at: Mapped[datetime] = mapped_column(TS, default=utcnow, onupdate=utcnow, nullable=False)
+
+    evidence: Mapped[list[SceneEvidence]] = relationship(cascade="all, delete-orphan", order_by="SceneEvidence.ord")
+    __table_args__ = (
+        # one pipeline-made L1 scene per chapter and run; any number of requested L2 scenes
+        sa.Index("uq_scene_l1_per_run", "chapter_id", "content_run_id", unique=True, **_where("level = 'l1'")),
+    )
+
+
+class SceneEvidence(Base):
+    __tablename__ = "scene_evidence"
+
+    scene_id: Mapped[str] = mapped_column(sa.ForeignKey("scene_specs.id", ondelete="CASCADE"), primary_key=True)
+    evidence_id: Mapped[str] = mapped_column(sa.String(64), primary_key=True)
+    evidence_revision: Mapped[int] = mapped_column(nullable=False)
+    ord: Mapped[int] = mapped_column(nullable=False)
 
 
 # =============================================================================== inbox

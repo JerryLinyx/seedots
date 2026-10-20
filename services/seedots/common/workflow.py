@@ -90,6 +90,22 @@ class InProcessEngine:
             self._pool.shutdown(wait=False, cancel_futures=True)
 
 
+class Router:
+    """One StepRunner for an engine that serves several workflows (by workflow name)."""
+
+    def __init__(self, runners: dict[str, StepRunner]):
+        self.runners = runners
+
+    def plan(self, workflow: str, arg: dict[str, Any]) -> list[str]:
+        return self.runners[workflow].plan(workflow, arg)
+
+    def run_step(self, workflow: str, arg: dict[str, Any], step: str) -> None:
+        self.runners[workflow].run_step(workflow, arg, step)
+
+    def failed(self, workflow: str, arg: dict[str, Any], error: str) -> None:
+        self.runners[workflow].failed(workflow, arg, error)
+
+
 def build_engine(kind: str, runner: StepRunner, *, service: str, temporal_address: str = "",
                  inline: bool = False) -> Engine:
     if kind == "temporal":

@@ -11,6 +11,7 @@ import { Brand } from "./Brand";
 import { Coach, type CoachHandle } from "./Coach";
 import { DotRail } from "./DotRail";
 import { InterventionCard } from "./InterventionCard";
+import { ScenePanel } from "./SceneView";
 import { FilePlayer, type PlayerHandle, YouTubePlayer } from "./Player";
 import { Transcript } from "./Transcript";
 
@@ -233,6 +234,11 @@ export function LearnView({ mediaId }: { mediaId: string }) {
     if (s) setPack((p) => (p ? { ...p, settings: s } : p));
   }
 
+  const sceneEvent = useCallback(
+    (type: string, payload: Record<string, unknown>) => log.log(type, player.current?.time() ?? null, payload),
+    [log],
+  );
+
   function askCoach(q: string) {
     setTab("coach");
     setTimeout(() => coach.current?.ask(q), 0);
@@ -385,6 +391,18 @@ export function LearnView({ mediaId }: { mediaId: string }) {
                   </button>
                 </div>
               </div>
+
+              {pack && currentChapter && (
+                <ScenePanel
+                  mediaId={mediaId}
+                  chapterId={currentChapter.id}
+                  chapterTitle={currentChapter.title}
+                  scenes={pack.scenes}
+                  onEvent={sceneEvent}
+                  onAsk={askCoach}
+                  onSeek={seek}
+                />
+              )}
             </div>
           </section>
 

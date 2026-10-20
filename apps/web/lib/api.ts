@@ -9,6 +9,7 @@ import type {
   MarkType,
   Pack,
   Progress,
+  Scene,
   SearchResult,
   Settings,
   Signal,
@@ -132,6 +133,9 @@ export const api = {
   draftCard: (conceptId: string) => req<Card>(`/api/concepts/${conceptId}/card`, { method: "POST" }),
   updateCard: (id: string, patch: Partial<Pick<Card, "title" | "body" | "status">>) =>
     req<Card>(`/api/cards/${id}`, { method: "PATCH", body: json(patch) }),
+  requestScene: (media_id: string, chapter_id: string, request: string) =>
+    req<Scene>("/api/scenes", { method: "POST", body: json({ media_id, chapter_id, request }) }),
+  scene: (id: string) => req<Scene>(`/api/scenes/${id}`),
   resolveLink: (id: string, status: "confirmed" | "dismissed") =>
     req(`/api/links/${id}`, { method: "POST", body: json({ status }) }),
 };

@@ -90,7 +90,7 @@ async def run_worker(service: str) -> None:  # pragma: no cover - needs a Tempor
     container = build_container()
     client = await Client.connect(container.settings.temporal_address, namespace=f"seedots-{service}")
     worker = Worker(client, task_queue=f"seedots-{service}", workflows=[StepsWorkflow],
-                    activities=activities_for(container.runner),
+                    activities=activities_for(getattr(container, "workflows", None) or container.runner),
                     activity_executor=ThreadPoolExecutor(max_workers=4))
     await worker.run()
 

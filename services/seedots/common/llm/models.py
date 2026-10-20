@@ -50,7 +50,11 @@ def _flatten(messages: list[ModelMessage], info: AgentInfo) -> tuple[str, str]:
         if isinstance(part, SystemPromptPart):
             system = f"{part.content}\n{system}"
         elif isinstance(part, UserPromptPart):
-            user_bits.append(part.content if isinstance(part.content, str) else str(part.content))
+            content = part.content
+            if isinstance(content, str):
+                user_bits.append(content)
+            else:   # multimodal: keep the text, note the attachments
+                user_bits += [c if isinstance(c, str) else f"<{getattr(c, 'media_type', 'attachment')}>" for c in content]
         elif isinstance(part, ToolReturnPart):
             user_bits.append(f"<tool {part.tool_name}>{json.dumps(part.content, ensure_ascii=False, default=str)}")
     if not any(isinstance(p, UserPromptPart) for p in last.parts):

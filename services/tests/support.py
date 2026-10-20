@@ -13,7 +13,7 @@ def test_settings(tmp: Path, **over):
     base = load_settings()
     return dataclasses.replace(
         base, data_dir=tmp, llm=ModelEndpoint("http://fake", "", "fake"), llm_fake=True,
-        embeddings=ModelEndpoint(), asr=ModelEndpoint(),
+        embeddings=ModelEndpoint(), asr=ModelEndpoint(), vlm=ModelEndpoint(),
         media_db_url=f"sqlite:///{tmp / 'media.sqlite3'}", learning_db_url=f"sqlite:///{tmp / 'learning.sqlite3'}",
         auto_migrate=True, workflow_engine="inprocess", media_webhook_url="http://learning.test/hooks/media",
         webhook_secret="s3cret-test", action_selector="llm", **over)

@@ -1,0 +1,9 @@
+{
+  "name": "seedots-scenekit-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Headless sandbox that runs generated scenes for the SeeDots gates",
+  "type": "module",
+  "dependencies": { "playwright-core": "^1.56.0" },
+  "engines": { "node": ">=20" }
+}

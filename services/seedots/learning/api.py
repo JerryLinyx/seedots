@@ -147,6 +147,12 @@ class CandidateIn(BaseModel):
     merge: bool
 
 
+class SceneIn(BaseModel):
+    media_id: str
+    chapter_id: str
+    request: str = Field("", max_length=500)
+
+
 # ------------------------------------------------------------------------------ app
 def create_app(container: LearningContainer | None = None) -> FastAPI:
     logging.basicConfig(level=logging.INFO)
@@ -156,6 +162,7 @@ def create_app(container: LearningContainer | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         c.runner.resume()
+        c.scenes.resume()
         yield
 
     app = FastAPI(title="SeeDots learning backend", version="0.2.0", lifespan=lifespan)
@@ -397,9 +404,11 @@ def create_app(container: LearningContainer | None = None) -> FastAPI:
                 sa.select(Mark).where(Mark.user_id == user, Mark.media_id == media_id, Mark.deleted_at.is_(None))
                 .order_by(Mark.t))]
             st = s.get(UserSettings, user)
-            return {"video": video, "chapters": chapters, "sentences": sentences, "frames": frames,
-                    "concepts": list(concepts.values()), "items": projected, "marks": marks,
-                    "settings": _settings_out(st)}
+            pack_out = {"video": video, "chapters": chapters, "sentences": sentences, "frames": frames,
+                        "concepts": list(concepts.values()), "items": projected, "marks": marks,
+                        "settings": _settings_out(st)}
+        pack_out["scenes"] = c.scenes.for_video(media_id)
+        return pack_out
 
     def _proxy(path_media: str, request: Request, frame: str | None = None) -> StreamingResponse:
         headers = {k: v for k, v in request.headers.items() if k.lower() in ("range", "if-range")}
@@ -528,6 +537,47 @@ def create_app(container: LearningContainer | None = None) -> FastAPI:
             from seedots.learning.catalog import snapshot
             snapshot(s, [unit])
         return {"id": unit.id, "revision": unit.revision, "text": unit.content["text"]}
+
+    # ================================================================== scenes
+    def _scene_visible(scene_id: str, user: str) -> None:
+        media_id = _404(c.scenes.media_of, scene_id)
+        with db.session() as s:
+            _404(visible_video, s, media_id, user)
+
+    @app.post("/api/scenes", status_code=202)
+    def request_scene(body: SceneIn, user: str = Depends(current_user)) -> dict:
+        """Ask the scene agent for an interactive (L2). Progress is readable at GET /api/scenes/{id}."""
+        with db.session() as s:
+            ensure_user(s, user)
+            _404(visible_video, s, body.media_id, user)
+        scene_id = _404(c.scenes.request, user, body.media_id, body.chapter_id, body.request)
+        return c.scenes.get(scene_id)
+
+    @app.get("/api/scenes/{scene_id}")
+    def get_scene(scene_id: str, user: str = Depends(current_user)) -> dict:
+        _scene_visible(scene_id, user)
+        return c.scenes.get(scene_id)
+
+    @app.get("/api/scenes/{scene_id}/runner")
+    def scene_runner(scene_id: str, user: str = Depends(current_user)):
+        """The generated scene page. Served with a CSP sandbox so it runs in an opaque origin
+        even if opened directly; the app also embeds it in <iframe sandbox="allow-scripts">."""
+        from fastapi.responses import HTMLResponse
+
+        from seedots.learning.scenes.kit import CSP
+
+        _scene_visible(scene_id, user)
+        html = _404(c.scenes.runner, scene_id)
+        return HTMLResponse(html, headers={
+            "Content-Security-Policy": f"sandbox allow-scripts; {CSP}", "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
+    @app.get("/api/scenes/{scene_id}/preview.png")
+    def scene_preview(scene_id: str, user: str = Depends(current_user)):
+        from fastapi.responses import FileResponse
+
+        _scene_visible(scene_id, user)
+        return FileResponse(_404(c.scenes.preview, scene_id), media_type="image/png")
 
     # ================================================================== knowledge
     @app.get("/api/map")

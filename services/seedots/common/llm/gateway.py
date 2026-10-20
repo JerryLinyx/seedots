@@ -26,7 +26,9 @@ os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 
 from pydantic import BaseModel  # noqa: E402
 from pydantic_ai import Agent, NativeOutput, PromptedOutput, ToolOutput  # noqa: E402
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, UserPromptPart  # noqa: E402
+from pydantic_ai.messages import (BinaryContent, ModelMessage, ModelRequest, ModelResponse,  # noqa: E402
+                                  TextPart, UserPromptPart)
+from pydantic_ai.usage import UsageLimits  # noqa: E402
 from pydantic_ai.models import Model  # noqa: E402
 from pydantic_ai.toolsets import FunctionToolset  # noqa: E402
 
@@ -129,10 +131,11 @@ def history_messages(turns: Sequence[tuple[str, str]]) -> list[ModelMessage]:
 class Gateway:
     def __init__(self, *, prompts: PromptLibrary, model_factory: ModelFactory, model_name: str,
                  tasks: Sequence[TaskSpec], usage_sink: UsageSink | None = None,
-                 cache: CacheStore | None = None):
+                 cache: CacheStore | None = None, model_names: dict[str, str] | None = None):
         self.prompts = prompts
         self.model_factory = model_factory
         self.model_name = model_name
+        self.model_names = model_names or {}      # tasks routed to another model (logged accurately)
         self.tasks = {t.name: t for t in tasks}
         self.usage_sink = usage_sink
         self.cache = cache
@@ -169,28 +172,39 @@ class Gateway:
                 log.exception("usage sink failed")
 
     def _cache_key(self, spec: TaskSpec, prompt: Prompt, system: str, user: str) -> str:
-        raw = json.dumps([spec.name, prompt.tag, self.model_name, system, user], ensure_ascii=False)
+        raw = json.dumps([spec.name, prompt.tag, self.model_names.get(spec.name, self.model_name), system, user], ensure_ascii=False)
         return hashlib.sha256(raw.encode()).hexdigest()
 
     # ----------------------------------------------------------------- structured, sync
     def run(self, task: str, variables: dict[str, Any], *, manifest: dict[str, Any] | None = None,
-            use_cache: bool | None = None) -> Any:
+            use_cache: bool | None = None, tools: Sequence[Callable[..., Any]] = (),
+            images: Sequence[bytes] = (), max_requests: int | None = None) -> Any:
+        """Structured call. `tools` turns it into a bounded agent loop (the model may call the
+        whitelisted functions, at most `max_requests` model requests); `images` are PNGs sent
+        with the user message (vision tasks)."""
         spec = self.spec(task)
         if spec.output is None:
             raise LLMError(f"task {task!r} is a text task; use stream()")
         prompt = self.prompts.get(task, spec.prompt_version)
         system, user = prompt.render(variables)
-        caching = spec.cache if use_cache is None else use_cache
+        caching = (spec.cache if use_cache is None else use_cache) and not tools and not images
         key = self._cache_key(spec, prompt, system, user) if caching and self.cache else None
         if key and (hit := self.cache.get(key)) is not None:
             return spec.output.model_validate(hit)
         self._budget.check(spec)
 
         started = time.perf_counter()
-        rec = UsageRecord(task=task, model=self.model_name, prompt_version=prompt.tag, ok=False, latency_ms=0,
-                          context_manifest=manifest or {})
+        rec = UsageRecord(task=task, model=self.model_names.get(task, self.model_name), prompt_version=prompt.tag, ok=False, latency_ms=0,
+                          context_manifest={**(manifest or {}), **({"tools": [f.__name__ for f in tools]} if tools else {}),
+                                            **({"images": len(images)} if images else {})})
+        user_prompt: Any = user
+        if images:
+            user_prompt = [user, *(BinaryContent(data=img, media_type="image/png") for img in images)]
         try:
-            result = self._agent(spec, prompt).run_sync(user, instructions=system)
+            result = self._agent(spec, prompt).run_sync(
+                user_prompt, instructions=system,
+                toolsets=[FunctionToolset(list(tools))] if tools else None,
+                usage_limits=UsageLimits(request_limit=max_requests) if max_requests else None)
         except Exception as exc:
             rec.error = f"{type(exc).__name__}: {exc}"[:500]
             rec.latency_ms = int((time.perf_counter() - started) * 1000)
@@ -216,7 +230,7 @@ class Gateway:
         system, user = prompt.render(variables)
         self._budget.check(spec)
         started = time.perf_counter()
-        rec = UsageRecord(task=task, model=self.model_name, prompt_version=prompt.tag, ok=False, latency_ms=0,
+        rec = UsageRecord(task=task, model=self.model_names.get(task, self.model_name), prompt_version=prompt.tag, ok=False, latency_ms=0,
                           context_manifest={**(manifest or {}), "tools": [t.__name__ for t in tools]})
         toolsets = [FunctionToolset(list(tools))] if tools else None
         try:

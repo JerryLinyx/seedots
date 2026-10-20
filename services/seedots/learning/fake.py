@@ -7,7 +7,11 @@ import re
 
 from seedots.common.llm import FakeToolCall
 
+from pathlib import Path
+
 from seedots.common.llm.phrases import phrases
+
+FAKE_SCENE = (Path(__file__).parent / "scenes" / "fake_scene.js").read_text(encoding="utf-8")
 
 
 def _sentences(text: str) -> list[tuple[str, str]]:
@@ -91,4 +95,29 @@ def learning_brain(task: str, system: str, user: str):
         cite = f" [{refs[0]}]" if refs else (f" [{sid.group(1)}]" if sid else "")
         return (f"(offline fake model) Here the video is building up its main point{cite}. "
                 f"Try restating it in your own words. What would change if the opposite were true?")
+    if task == "scene_spec":
+        sents = _sentences(user)
+        hit = next((sid for sid, s in sents if "learning rate" in s.lower() or "gradient" in s.lower()), None)
+        if hit is None:
+            return json.dumps({"scene": None, "reason": "no quantitative relationship here (offline brain)"})
+        return json.dumps({"scene": {
+            "component": "iteration", "title": "How big a step?",
+            "prompt": "Move the learning rate and watch the steps walk down the loss curve.",
+            "state_label": "parameter", "start": 0, "update": "x - lr*2*(x-3)", "steps": 30,
+            "objective": "(x-3)^2", "x": {"min": -1, "max": 7, "label": "parameter value"},
+            "params": [{"name": "lr", "label": "Learning rate", "min": 0.02, "max": 1.1, "step": 0.01, "value": 0.1}],
+            "predict": {"question": "What happens to the steps if the learning rate is 1.05?", "param": "lr",
+                        "to": 1.05, "observe": {"kind": "behaviour"}},
+            "evidence": [hit]}})
+    if task == "scene_code":
+        decl = {"title": "Gradient descent, step by step", "prompt": "Change the learning rate and watch each step.",
+                "engine": "canvas", "code": FAKE_SCENE,
+                "params": [{"name": "lr", "label": "Learning rate", "min": 0.02, "max": 1.1, "step": 0.01, "value": 0.1}],
+                "predict": {"question": "What happens if the learning rate is 1.05?", "param": "lr", "to": 1.05,
+                            "observation": "behaviour", "options": ["settles down", "keeps bouncing", "blows up"]}}
+        if "<tool run_checks>" not in user:
+            return FakeToolCall("run_checks", decl)
+        return json.dumps(decl)
+    if task == "scene_review":
+        return json.dumps({"ok": True, "score": 4, "problems": []})
     return "{}"

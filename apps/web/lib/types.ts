@@ -90,6 +90,7 @@ export type Pack = {
   items: Item[];
   marks: Mark[];
   settings: Settings;
+  scenes: Scene[];
 };
 
 export type SignalKind =
@@ -200,4 +201,68 @@ export type SearchResult = {
   concepts: { id: string; name: string; definition: string; match: "keyword" | "semantic" }[];
   moments: { media_id: string; title: string; id: string; t0: number; text: string }[];
   cards: Card[];
+};
+
+// ---------------------------------------------------------------- interactive scenes
+export type SceneParam = { name: string; label: string; min: number; max: number; step: number; value: number };
+
+export type ScenePredict = {
+  question: string;
+  param: string;
+  to: number;
+  options: string[];
+  observe?: { kind: "value_at" | "final" | "behaviour"; x?: number | null; curve?: number };
+  observation?: string; // L2: the name the scene reports with kit.observe
+};
+
+export type FunctionPlotSpec = {
+  component: "function_plot";
+  title: string;
+  prompt: string;
+  x: { min: number; max: number; label: string };
+  y_label: string;
+  curves: { expr: string; label: string }[];
+  params: SceneParam[];
+  predict: ScenePredict;
+};
+
+export type IterationSpec = {
+  component: "iteration";
+  title: string;
+  prompt: string;
+  state_label: string;
+  start: number;
+  update: string;
+  steps: number;
+  objective: string | null;
+  x: { min: number; max: number; label: string };
+  params: SceneParam[];
+  predict: ScenePredict;
+};
+
+export type L2Spec = {
+  title: string;
+  prompt: string;
+  engine: string;
+  params: SceneParam[];
+  predict: ScenePredict;
+  runner: string;
+  preview: string;
+};
+
+export type SceneProgressEntry = { at: string; stage: string; note: string; attempt?: number };
+
+export type Scene = {
+  id: string;
+  level: "l1" | "l2";
+  component: string;
+  chapter_id: string;
+  title: string;
+  status: "queued" | "generating" | "ready" | "failed";
+  request: string;
+  error: string | null;
+  progress: { stage: string | null; log: SceneProgressEntry[] };
+  evidence: { id: string; t0: number | null }[];
+  checks: Record<string, string>;
+  spec: FunctionPlotSpec | IterationSpec | L2Spec | null;
 };

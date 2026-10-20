@@ -46,6 +46,7 @@ class Settings:
     llm_fake: bool
     embeddings: ModelEndpoint            # concept recall; falls back to a local lexical embedder
     asr: ModelEndpoint                   # /audio/transcriptions; required only for sources without captions
+    vlm: ModelEndpoint                   # vision model for the scene screenshot review gate
     # databases (each service owns one)
     media_db_url: str
     learning_db_url: str
@@ -60,6 +61,7 @@ class Settings:
     webhook_secret: str
     grabber_dir: Path
     action_selector: str                 # "llm" | "rule"
+    sandbox: str = "local"               # where generated scenes run: "local" (headless Chromium) | "off"
     web_origins: list[str] = field(default_factory=list)
 
 
@@ -82,6 +84,8 @@ def load_settings() -> Settings:
                                  _env("SEEDOTS_EMBED_API_KEY", llm_key), _env("SEEDOTS_EMBED_MODEL")),
         asr=ModelEndpoint(_env("SEEDOTS_ASR_BASE_URL", llm_base).rstrip("/"),
                           _env("SEEDOTS_ASR_API_KEY", llm_key), _env("SEEDOTS_ASR_MODEL")),
+        vlm=ModelEndpoint(_env("SEEDOTS_VLM_BASE_URL", llm_base).rstrip("/"),
+                          _env("SEEDOTS_VLM_API_KEY", llm_key), _env("SEEDOTS_VLM_MODEL")),
         media_db_url=_env("SEEDOTS_MEDIA_DB_URL") or _sqlite_url(data_dir, "media.sqlite3"),
         learning_db_url=_env("SEEDOTS_LEARNING_DB_URL") or _sqlite_url(data_dir, "learning.sqlite3"),
         auto_migrate=_flag("SEEDOTS_AUTO_MIGRATE", True),
@@ -93,6 +97,7 @@ def load_settings() -> Settings:
         webhook_secret=_env("SEEDOTS_WEBHOOK_SECRET", "change-me"),
         grabber_dir=Path(_env("SEEDOTS_GRABBER_DIR") or REPO_ROOT / "services" / "grabber"),
         action_selector=_env("SEEDOTS_ACTION_SELECTOR", "llm"),
+        sandbox=_env("SEEDOTS_SANDBOX", "local"),
         web_origins=[o.strip() for o in _env("SEEDOTS_WEB_ORIGINS",
                                               "http://localhost:3000,http://127.0.0.1:3000").split(",")
                      if o.strip()],

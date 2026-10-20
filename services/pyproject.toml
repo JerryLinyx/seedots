@@ -29,7 +29,7 @@ build-backend = "setuptools.build_meta"
 include = ["seedots*"]
 
 [tool.setuptools.package-data]
-"seedots" = ["**/prompts/*.md"]
+"seedots" = ["**/prompts/*.md", "**/scenes/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

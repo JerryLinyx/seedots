@@ -28,6 +28,7 @@ export class InterventionPolicy {
   private firedChapterEnds = new Set<string>();
   private firedPredicts = new Set<string>();
   private firedLinks = new Set<string>();
+  private quietUntil = 0;
 
   constructor(
     private getSettings: () => Settings,
@@ -45,7 +46,7 @@ export class InterventionPolicy {
     this.last = now;
     const dtWall = (wall - this.lastWall) / 1000;
     this.lastWall = wall;
-    if (!prev) return;
+    if (!prev || wall < this.quietUntil) return;
 
     const expected = prev.playing ? prev.t + dtWall * prev.rate : prev.t;
     const jump = now.t - expected;
@@ -96,8 +97,9 @@ export class InterventionPolicy {
   }
 
   /** Forget the last tick, e.g. after a programmatic seek (resume) that is not the learner's doing. */
-  reset() {
+  reset(quietMs = 1500) {
     this.last = null;
+    this.quietUntil = performance.now() + quietMs; // the player may report the old time for a moment
   }
 
   /** Native players report seeks directly. */

@@ -11,7 +11,7 @@ from seedots.common.config import Settings, load_settings
 from seedots.common.db import Database
 from seedots.common.llm import Gateway, TaskSpec, build_gateway
 from seedots.common.migrate import upgrade
-from seedots.common.workflow import Engine, build_engine
+from seedots.common.workflow import Engine, Router, build_engine
 from seedots.learning.catalog import Inbox
 from seedots.learning.coach import Coach
 from seedots.learning.concepts import ConceptLibrary, JudgeOut, build_embedder
@@ -20,7 +20,10 @@ from seedots.learning.knowledge import CardOut, Knowledge
 from seedots.learning.media_client import MediaClient
 from seedots.learning.models import Base, LlmCache, UsageLog
 from seedots.learning.pipeline import ConceptsOut, ContentRunner, ItemsOut
+from seedots.learning.pipeline import WORKFLOW as CHAPTER_WORKFLOW
 from seedots.learning.runtime import LLMSelector, Runtime, SelectOut
+from seedots.learning.scenes.sandbox import NodeSandbox
+from seedots.learning.scenes.service import WORKFLOW as SCENE_WORKFLOW, CodeOut, ReviewOut, SceneService, SpecOut
 
 PROMPTS = Path(__file__).parent / "prompts"
 TASKS = [
@@ -30,6 +33,9 @@ TASKS = [
     TaskSpec("select_action", SelectOut, temperature=0.0, max_tokens=300, timeout=20),
     TaskSpec("coach", None, temperature=0.4, max_tokens=700, timeout=60),
     TaskSpec("card", CardOut, temperature=0.3, max_tokens=900),
+    TaskSpec("scene_spec", SpecOut, temperature=0.2, max_tokens=2000, cache=True),
+    TaskSpec("scene_code", CodeOut, temperature=0.3, max_tokens=8000, timeout=180, output_retries=2),
+    TaskSpec("scene_review", ReviewOut, temperature=0.0, max_tokens=400, timeout=60),
 ]
 
 
@@ -46,6 +52,8 @@ class LearningContainer:
     coach: Coach
     knowledge: Knowledge
     library: ConceptLibrary
+    scenes: SceneService
+    workflows: Router
 
 
 def build_container(settings: Settings | None = None, *, media_http: httpx.Client | None = None,
@@ -55,16 +63,21 @@ def build_container(settings: Settings | None = None, *, media_http: httpx.Clien
         upgrade("learning", settings.learning_db_url)
     db = Database(settings.learning_db_url, Base.metadata)
     gateway = build_gateway(settings, prompt_dir=PROMPTS, tasks=TASKS, brain=learning_brain, db=db,
-                            usage_model=UsageLog, cache_model=LlmCache)
+                            usage_model=UsageLog, cache_model=LlmCache, task_endpoints={"scene_review": settings.vlm})
     media = MediaClient(media_http) if media_http is not None else MediaClient.at(settings.media_url)
     embedder = build_embedder(settings.embeddings)
     library = ConceptLibrary(db, gateway, embedder)
-    runner = ContentRunner(db, media, gateway, library)
-    engine = build_engine(settings.workflow_engine, runner, service="learning",
+    sandbox = NodeSandbox() if settings.sandbox == "local" else None
+    scenes = SceneService(db, gateway, sandbox, vision=settings.llm_fake or settings.vlm.configured,
+                          data_dir=settings.data_dir)
+    runner = ContentRunner(db, media, gateway, library, scenes)
+    workflows = Router({CHAPTER_WORKFLOW: runner, SCENE_WORKFLOW: scenes})
+    engine = build_engine(settings.workflow_engine, workflows, service="learning",
                           temporal_address=settings.temporal_address, inline=inline)
-    runner.engine = engine
+    runner.engine = scenes.engine = engine
     return LearningContainer(
         settings=settings, db=db, gateway=gateway, media=media, runner=runner, engine=engine,
         inbox=Inbox(db, media, runner.chapter_ready),
         runtime=Runtime(db, LLMSelector(gateway), use_llm=settings.action_selector == "llm"),
-        coach=Coach(db, gateway), knowledge=Knowledge(db, gateway, embedder), library=library)
+        coach=Coach(db, gateway), knowledge=Knowledge(db, gateway, embedder), library=library,
+        scenes=scenes, workflows=workflows)

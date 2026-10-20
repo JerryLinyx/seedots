@@ -4,6 +4,7 @@
     concepts  extract mentions -> resolve into the global library -> occurrences
     items     generate the base item pool -> validate -> publish (auto_validated)
     gap_fill  ask once more for (concept, level) cells the base pool left empty
+    scene     at most one L1 interactive scene, if the chapter has a relationship worth trying
 
 Runs on chapter_ready, in the order the foundation announces chapters (playback priority).
 Idempotent per (chapter, PIPELINE_VERSION); each step records its result in the run's stats.
@@ -31,7 +32,7 @@ log = logging.getLogger("seedots.learning.pipeline")
 
 PIPELINE_VERSION = "content@2"
 WORKFLOW = "learning.chapter"
-STEPS = ["snapshot", "concepts", "items", "gap_fill"]
+STEPS = ["snapshot", "concepts", "items", "gap_fill", "scene"]
 
 
 class MisconceptionOut(BaseModel):
@@ -57,8 +58,8 @@ class ItemsOut(BaseModel):
 
 
 class ContentRunner:
-    def __init__(self, db: Database, media: MediaClient, gateway: Gateway, library: ConceptLibrary):
-        self.db, self.media, self.gateway, self.library = db, media, gateway, library
+    def __init__(self, db: Database, media: MediaClient, gateway: Gateway, library: ConceptLibrary, scenes=None):
+        self.db, self.media, self.gateway, self.library, self.scenes = db, media, gateway, library, scenes
         self.engine: Engine | None = None
 
     # ------------------------------------------------------------------ entry
@@ -251,3 +252,11 @@ class ContentRunner:
         except LLMError as exc:          # the base pool is already usable; gap fill is best effort
             return {"gaps": len(gaps), "error": str(exc)[:200]}
         return {"gaps": len(gaps), **res}
+
+    def _scene(self, media_id: str, chapter_id: str, run_id: int) -> dict:
+        if self.scenes is None:
+            return {"scene": None, "reason": "scenes disabled"}
+        try:
+            return self.scenes.make_l1(media_id, chapter_id, run_id)
+        except LLMError as exc:          # the chapter is useful without a scene
+            return {"scene": None, "reason": f"model error: {str(exc)[:160]}"}

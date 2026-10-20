@@ -42,7 +42,7 @@ usage_logs, llm_cache
       learning_items（不可变版本）─┬ item_concepts / item_evidence
                                    ├ item_reviews（追加写，状态投影到 item）
                                    └ item_rejections（自动校验未通过的草稿，供评测）
-      scene_specs（L1/L2 交互场，随视频共享）
+      scene_specs ── scene_evidence（L1/L2 交互场，随视频共享；progress 记录生成阶段，gates 记录各道闸门结果）
 日志  learning_events, decisions, attempts, marks, coach_threads ── coach_messages ── message_citations
 派生  mastery, concept_links, knowledge_cards ── card_sources
 用户  users, user_settings, library_entries, collections ── collection_items
@@ -57,6 +57,11 @@ usage_logs, llm_cache
 4. **概念合并可回滚**：`concept_merge_log.detail` 记录每一处移动（出现位置、学习项、别名、误区、掌握度、卡片、链接）；`concepts.merge_target` CHECK 保证“已合并 ⇔ 有合并目标”；活跃概念名唯一（部分唯一索引）。
 5. **决策全量记录**：规则结果（`rule_action/rule_item_id`）每次都存，模型结果、是否回退、延迟、最终展示结果（`outcome`）都在同一行，便于离线评测动作选择。
 6. **隔离**：`videos.visibility/owner_id` 决定可见性；私有视频随用户删除级联。
+
+## 迁移历史
+
+- `0001` 初始结构
+- `0002` 交互场：`scene_specs` 增加 title / request / progress / error / generator / content_run_id / updated_at，新增 `scene_evidence`，状态增加 `queued`（只是换一条 CHECK 约束，示范了“枚举 = VARCHAR + CHECK”的好处）。新增的 NOT NULL 列带 server_default，已有数据可以直接升级；降级会把 `queued` 先改回 `generating`。
 
 ## 迁移
 
