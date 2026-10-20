@@ -1,0 +1,20 @@
+# Working on SeeDots
+
+## Technical plan
+- The plan lives in `docs/tech-plan.md` and is the source of truth for design. The old Claude Doc (v1.1) is frozen.
+- Jerry edits the plan by hand too. Before changing it: `git pull`, read the current file, and edit in place.
+  Never rewrite it wholesale; where his wording conflicts with yours, his wins.
+- When a change alters the design (architecture, data model, interfaces, invariants, gates, defaults that
+  matter), update the plan in the same commit and add a line under "变更记录". Pure implementation changes
+  don't need a plan edit.
+- "实现状态" only claims what exists in the repo and is covered by tests. Untested paths say "未验证".
+
+## Other docs
+- `docs/database.md`: schema design and migration history. New migration => add a line there.
+- `README.md`: structure, setup, deviations from the plan.
+
+## Conventions
+- Docs and user-facing replies are in Chinese; code, comments and commit messages in English.
+- Three invariants (plan §1): time only from evidence ids; online path only looks things up; facts computed by code.
+- Every model call goes through the gateway (`services/seedots/common/llm`); prompts are versioned files.
+- Tests: `cd services && python -m pytest` (offline, fake model). L2 sandbox tests need `services/scenekit` deps.

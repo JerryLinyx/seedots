@@ -2,7 +2,7 @@
 
 See the dots. Connect them. 给正在看的教学视频加一层 AI：在恰当的时刻出现可验证的学习动作，答案指回视频里的具体时刻，并把不同视频里的知识连起来。
 
-按《Trace 技术方案 v1.1》实现：通用视频分析底座 → 学习内容生成 → 学习运行时 → AI Coach → 知识地图。
+按 [技术方案](docs/tech-plan.md) 实现：通用视频分析底座 → 学习内容生成 → 学习运行时 → AI Coach → 知识地图。
 
 ## 结构
 
@@ -36,6 +36,7 @@ services/
   scenekit/                  本机无头 Chromium 沙箱（Node + playwright-core）
   grabber/                   网页视频抓取（来自 Kiwi/mediagrab，Node）
   migrations/                Alembic，每个服务一套
+docs/tech-plan.md            技术方案（以此为准，和代码一起维护）
 docs/database.md             数据库设计
 ```
 
