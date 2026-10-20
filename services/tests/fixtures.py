@@ -37,13 +37,13 @@ If the learning rate is too large, the loss can oscillate or diverge.
 """
 
 
-def long_vtt(n: int = 40) -> str:
+def long_vtt(n: int = 40, template: str = "Sentence {i} explains how the {topic} behaves during training.",
+             topics: tuple[str, ...] = ("gradient descent", "learning rate", "loss function", "momentum")) -> str:
     """A clean, punctuated caption track with n sentences, 6s apart, about a few concepts."""
-    topics = ["gradient descent", "learning rate", "loss function", "momentum"]
     lines = ["WEBVTT", ""]
     for i in range(n):
         t0, t1 = i * 6, i * 6 + 5
         topic = topics[(i // 10) % len(topics)]
         lines += [f"00:{t0 // 60:02d}:{t0 % 60:02d}.000 --> 00:{t1 // 60:02d}:{t1 % 60:02d}.000",
-                  f"Sentence {i} explains how the {topic} behaves during training.", ""]
+                  template.format(i=i, topic=topic), ""]
     return "\n".join(lines)

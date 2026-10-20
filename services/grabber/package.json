@@ -1,0 +1,18 @@
+{
+  "name": "mediagrab",
+  "version": "0.1.0",
+  "description": "Detect audio/video on any web page and download it losslessly (HLS, DASH, progressive, MSE capture).",
+  "type": "module",
+  "bin": { "mediagrab": "bin/mediagrab.mjs" },
+  "scripts": {
+    "start": "node bin/mediagrab.mjs serve",
+    "fixtures": "bash test/gen.sh",
+    "test:core": "node test/core.test.mjs",
+    "test:e2e": "node test/e2e.test.mjs",
+    "test:ytdlp": "node test/ytdlp.test.mjs",
+    "test": "node test/core.test.mjs && node test/e2e.test.mjs && node test/ytdlp.test.mjs"
+  },
+  "dependencies": { "playwright-core": "^1.56.0" },
+  "engines": { "node": ">=20" },
+  "license": "MIT"
+}

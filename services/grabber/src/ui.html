@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mediagrab</title>
+<meta name="color-scheme" content="light dark">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --fog: #ECEEF2; --paper: #F6F7FA; --ink: #141B2E; --ink-2: #3A4258; --mute: #6B7285; --line: #D5D9E2; --line-2: #E2E5EC;
+  --signal: #2E2BF0; --signal-ink: #FFFFFF; --signal-soft: #DCDBFD; --done: #141B2E; --err: #C2410C; --ok: #1F7A4D;
+  --font: "Schibsted Grotesk", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --ease: cubic-bezier(.2, .7, .1, 1);
+  --r-lg: 18px; --r-md: 12px; --r-sm: 6px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --fog: #0F1526; --paper: #151C30; --ink: #E7EAF3; --ink-2: #C3C8D6; --mute: #8B92A7; --line: #2A3249; --line-2: #222A3F;
+  --signal: #9C9BFF; --signal-ink: #0F1526; --signal-soft: #2B2E63; --err: #F08A5D; --ok: #6FD3A0; --done: #56608A; } }
+:root[data-theme="dark"] {
+  --fog: #0F1526; --paper: #151C30; --ink: #E7EAF3; --ink-2: #C3C8D6; --mute: #8B92A7; --line: #2A3249; --line-2: #222A3F;
+  --signal: #9C9BFF; --signal-ink: #0F1526; --signal-soft: #2B2E63; --err: #F08A5D; --ok: #6FD3A0; --done: #56608A; }
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--fog); color: var(--ink); font: 400 16px/1.6 var(--font); font-feature-settings: "tnum" 1; -webkit-font-smoothing: antialiased; }
+::selection { background: var(--signal); color: var(--signal-ink); }
+a { color: inherit; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: 4px; }
+.wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+
+/* ── top bar ─────────────────────────────────────────── */
+.top { display: flex; justify-content: space-between; align-items: center; padding: 22px 0; font-size: 14px; }
+.mark { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; font-size: 17px; }
+.mark svg { display: block; }
+.top .local { color: var(--mute); display: flex; align-items: center; gap: 8px; }
+.top .local::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+
+/* ── hero ────────────────────────────────────────────── */
+.hero { padding: clamp(40px, 9vh, 104px) 0 28px; }
+h1 .l { display: inline-block; }
+h1 { font-size: clamp(38px, 7.2vw, 80px); line-height: 1.04; letter-spacing: -.045em; font-weight: 800; margin: 0; max-width: 11.5em; text-wrap: balance; }
+.lede { color: var(--ink-2); font-size: clamp(16px, 1.6vw, 18px); max-width: 33em; margin: 22px 0 0; line-height: 1.7; }
+
+/* ── input slot ──────────────────────────────────────── */
+form { margin-top: clamp(32px, 6vh, 56px); }
+.slot { display: flex; align-items: center; gap: 8px; background: var(--paper); border: 1.5px solid var(--ink); border-radius: var(--r-lg); padding: 8px 8px 8px 22px;
+  transition: box-shadow .25s var(--ease), border-color .25s var(--ease); }
+.slot:focus-within { border-color: var(--signal); box-shadow: 0 0 0 5px color-mix(in srgb, var(--signal) 16%, transparent); }
+.slot input { flex: 1; min-width: 0; border: 0; background: transparent; font-size: clamp(16px, 2vw, 19px); padding: 14px 0; outline: none; }
+.slot input::placeholder { color: var(--mute); }
+.go { flex: none; height: 52px; padding: 0 26px; border: 0; border-radius: 12px; background: var(--signal); color: var(--signal-ink); font-weight: 700; font-size: 16px; cursor: pointer;
+  transition: transform .15s var(--ease), filter .2s; display: inline-flex; align-items: center; gap: 10px; }
+.go:hover { filter: brightness(1.08); }
+.go:active { transform: scale(.97); }
+.go[aria-busy="true"] { cursor: progress; }
+.go .spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; display: none; animation: spin .8s linear infinite; }
+.go[aria-busy="true"] .spin { display: block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.hint { color: var(--mute); font-size: 13px; margin: 10px 2px 0; min-height: 1.6em; }
+.hint.err { color: var(--err); }
+
+/* ── options ─────────────────────────────────────────── */
+.opts { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; margin-top: 18px; font-size: 14px; color: var(--ink-2); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; padding: 3px; background: var(--paper); gap: 2px; }
+.seg label { position: relative; }
+.seg input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.seg span { display: block; padding: 5px 12px; border-radius: 7px; cursor: pointer; transition: background .2s var(--ease), color .2s; }
+.seg input:checked + span { background: var(--ink); color: var(--fog); }
+.seg input:focus-visible + span { outline: 2px solid var(--signal); outline-offset: 1px; }
+.opt-group { display: flex; align-items: center; gap: 10px; }
+.opt-group > b { font-weight: 500; color: var(--mute); }
+.sw { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; user-select: none; }
+.sw input { appearance: none; width: 34px; height: 20px; border-radius: 20px; background: var(--line); position: relative; margin: 0; cursor: pointer; transition: background .2s var(--ease); flex: none; }
+.sw input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--paper); transition: transform .22s var(--ease); box-shadow: 0 1px 2px rgba(20, 27, 46, .25); }
+.sw input:checked { background: var(--signal); }
+.sw input:checked::after { transform: translateX(14px); }
+
+/* ── sections ────────────────────────────────────────── */
+section { margin-top: 64px; }
+.sec-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding-bottom: 14px; border-bottom: 1.5px solid var(--ink); }
+.sec-head h2 { margin: 0; font-size: 22px; letter-spacing: -.02em; font-weight: 700; }
+.sec-head .aside { color: var(--mute); font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* ── live traffic ────────────────────────────────────── */
+.listen { display: grid; grid-template-columns: 1fr auto; gap: 6px 24px; padding: 18px 0 6px; align-items: baseline; }
+.listen .what { font-size: 15px; color: var(--ink-2); }
+.listen .what strong { color: var(--ink); font-weight: 600; }
+.counts { display: flex; gap: 20px; font-size: 14px; color: var(--mute); }
+.counts b { color: var(--ink); font-weight: 700; font-size: 18px; margin-right: 4px; }
+.counts .hot b { color: var(--signal); }
+.traffic { list-style: none; margin: 8px 0 0; padding: 0; height: 252px; overflow: hidden; position: relative;
+  -webkit-mask-image: linear-gradient(#000 55%, transparent); mask-image: linear-gradient(#000 55%, transparent); }
+.traffic:empty::before { content: "等待播放器发出第一个请求…"; display: block; color: var(--mute); font-size: 14px; padding-top: 6px; }
+.traffic li { display: grid; grid-template-columns: 14px 64px 1fr auto; gap: 12px; align-items: center; height: 28px; font-size: 13px; color: var(--ink-2); animation: drop .35s var(--ease); }
+.traffic .g { width: 10px; height: 10px; border-radius: 2px; border: 1.5px solid var(--line); }
+.traffic .k-hls .g, .traffic .k-dash .g { background: var(--signal); border-color: var(--signal); }
+.traffic .k-file .g { background: var(--ink); border-color: var(--ink); }
+.traffic .k-segment .g { border-color: var(--signal); }
+.traffic .kind { color: var(--mute); }
+.traffic .k-hls .kind, .traffic .k-dash .kind { color: var(--signal); font-weight: 600; }
+.traffic .u { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.traffic .u bdi { direction: ltr; unicode-bidi: isolate; }
+.traffic .st { color: var(--mute); }
+.traffic .st.bad { color: var(--err); }
+@keyframes drop { from { opacity: 0; transform: translateY(-10px); } }
+
+/* ── results ─────────────────────────────────────────── */
+.tracks { list-style: none; margin: 0; padding: 0; }
+.track { border-bottom: 1px solid var(--line); padding: 22px 0; }
+.track-main { display: grid; grid-template-columns: 92px 1fr auto; gap: 8px 22px; align-items: start; }
+.kindtag { font-weight: 700; font-size: 14px; padding-top: 3px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kindtag small { display: block; font-weight: 500; color: var(--mute); font-size: 12px; }
+.track-main > div:nth-child(2) { min-width: 0; }
+.track .spec { font-size: 19px; font-weight: 600; letter-spacing: -.01em; line-height: 1.35; }
+.track .best { display: inline-block; vertical-align: 3px; margin-left: 10px; font-size: 12px; font-weight: 600; color: var(--signal); background: var(--signal-soft); padding: 1px 8px; border-radius: 99px; letter-spacing: 0; }
+.track .facts { color: var(--mute); font-size: 14px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.track .src { margin-top: 6px; font-size: 13px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60ch; }
+.track.disabled .spec { color: var(--mute); }
+.copy { all: unset; cursor: copy; border-radius: 4px; transition: color .2s; }
+.copy:hover { color: var(--ink); }
+.copy.ok { color: var(--ok); cursor: default; }
+.act { height: 42px; padding: 0 20px; border-radius: 11px; border: 1.5px solid var(--ink); background: transparent; font-weight: 700; cursor: pointer; white-space: nowrap;
+  transition: background .2s var(--ease), color .2s, transform .15s var(--ease); }
+.act:hover:not(:disabled) { background: var(--ink); color: var(--fog); }
+.act:active:not(:disabled) { transform: scale(.97); }
+.act.primary { background: var(--signal); border-color: var(--signal); color: var(--signal-ink); }
+.act.primary:hover:not(:disabled) { background: var(--signal); color: var(--signal-ink); filter: brightness(1.08); }
+.act:disabled { opacity: .45; cursor: not-allowed; }
+.act.busy, .act.busy:disabled { opacity: 1; cursor: progress; background: var(--signal-soft); border-color: transparent; color: var(--signal); display: inline-flex; align-items: center; gap: 9px; }
+.act.busy::before { content: ""; width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; }
+.act.done { border-color: var(--ok); color: var(--ok); background: transparent; opacity: 1; cursor: default; }
+.empty { color: var(--ink-2); padding: 28px 0; max-width: 36em; }
+
+/* ── job: segment mosaic ─────────────────────────────── */
+.job { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .45s var(--ease); }
+.job.open { grid-template-rows: 1fr; }
+.job > div { overflow: hidden; }
+.job-in { padding: 20px 0 4px 114px; }
+.lane + .lane { margin-top: 18px; }
+.lane-head { display: flex; justify-content: space-between; gap: 16px; font-size: 13px; color: var(--mute); margin-bottom: 8px; }
+.lane-head b { color: var(--ink); font-weight: 600; margin-right: 8px; }
+.mosaic { display: grid; grid-template-columns: repeat(var(--cols, 60), 1fr); gap: 3px; }
+.mosaic.strip { gap: 4px; }
+.mosaic.strip i { height: 30px; border-radius: 4px; }
+.mosaic i { height: 10px; border-radius: 2px; background: var(--line-2); box-shadow: inset 0 0 0 1px var(--line); transition: background .3s var(--ease), box-shadow .3s; }
+.mosaic i.on { background: var(--signal); box-shadow: inset 0 0 0 1px var(--signal); animation: land .5s var(--ease); }
+.mosaic.complete i.on { background: var(--done); box-shadow: inset 0 0 0 1px var(--done); transition-delay: calc(var(--d, 0) * 4ms); }
+@keyframes land { from { transform: scaleY(.3); opacity: .4; } }
+.rec { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--ink-2); }
+.rec::before { content: ""; width: 10px; height: 10px; border-radius: 50%; background: var(--err); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.status { margin-top: 14px; font-size: 13px; color: var(--mute); min-height: 1.6em; }
+.status.err { color: var(--err); }
+.status.warn { color: var(--err); }
+.saved { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 14px; }
+.saved a { color: var(--signal); font-weight: 600; text-decoration: none; border-bottom: 1px solid currentColor; }
+
+/* ── files ───────────────────────────────────────────── */
+.files { list-style: none; margin: 0; padding: 0; }
+.file { border-bottom: 1px solid var(--line); }
+.file-row { display: grid; grid-template-columns: 1fr auto auto; gap: 20px; align-items: center; padding: 16px 0; }
+.file-name { background: none; border: 0; padding: 0; text-align: left; cursor: pointer; font-weight: 600; font-size: 16px; display: flex; align-items: center; gap: 12px; min-width: 0; }
+.file-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-name .tri { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--ink); display: grid; place-items: center; transition: transform .3s var(--ease), background .2s; }
+.file-name .tri svg { margin-left: 2px; }
+.file.open .tri { transform: rotate(90deg); background: var(--ink); color: var(--fog); }
+.file-meta { color: var(--mute); font-size: 13px; white-space: nowrap; }
+.file-dl { font-size: 14px; color: var(--signal); font-weight: 600; text-decoration: none; }
+.file-dl:hover { text-decoration: underline; text-underline-offset: 3px; }
+.player { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .45s var(--ease); }
+.file.open .player { grid-template-rows: 1fr; }
+.player > div { overflow: hidden; }
+.player video, .player audio { display: block; width: 100%; max-height: 62vh; border-radius: var(--r-md); background: #000; margin: 0 0 18px; }
+.player audio { background: transparent; }
+.dir { color: var(--mute); font-size: 13px; margin-top: 14px; word-break: break-all; }
+
+footer { margin: 96px 0 40px; color: var(--mute); font-size: 13px; display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+/* ── responsive ──────────────────────────────────────── */
+@media (max-width: 640px) {
+  .mosaic { grid-template-columns: repeat(min(var(--cols, 60), 30), 1fr); }
+  .mosaic.strip i { height: 24px; }
+  .wrap { padding: 0 16px; }
+  .slot { flex-wrap: wrap; padding: 6px; }
+  .slot input { flex-basis: 100%; padding: 12px 12px 8px; }
+  .go { width: 100%; justify-content: center; }
+  .track-main { grid-template-columns: 1fr; }
+  .track-main .act { justify-self: start; margin-top: 6px; }
+  .kindtag { grid-column: 1 / -1; padding: 0; } .kindtag small { display: inline; margin-left: 8px; }
+  .job-in { padding-left: 0; }
+  .listen { grid-template-columns: 1fr; }
+  .traffic:empty::before { content: "等待播放器发出第一个请求…"; display: block; color: var(--mute); font-size: 14px; padding-top: 6px; }
+.traffic li { grid-template-columns: 12px 48px 1fr; } .traffic .st { display: none; }
+  .file-row { grid-template-columns: 1fr auto; } .file-meta { display: none; }
+  section { margin-top: 48px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; transition-delay: 0s !important; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="mark" aria-label="mediagrab">
+      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="1" y="1" width="9" height="9" rx="2" fill="currentColor"/><rect x="12" y="1" width="9" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><rect x="1" y="12" width="9" height="9" rx="2" fill="var(--signal)"/><rect x="12" y="12" width="9" height="9" rx="2" fill="currentColor"/></svg>
+      mediagrab
+    </div>
+    <span class="local">只在这台电脑上运行</span>
+  </header>
+
+  <main>
+    <div class="hero">
+      <h1><span class="l">粘贴链接，</span><br><span class="l">带走页面里的</span><span class="l">音视频。</span></h1>
+      <p class="lede">在本机打开网页，记下播放器发出的每一个请求，再按原始码流保存下来。不转码，画质和音质与源站完全一致。</p>
+
+      <form id="f" autocomplete="off">
+        <div class="slot">
+          <input id="url" type="text" required inputmode="url" autocapitalize="off" spellcheck="false" aria-label="网页或媒体链接" placeholder="网页地址，或 m3u8 / mpd / mp4 直链">
+          <button class="go" id="go" type="submit"><span class="spin" aria-hidden="true"></span><span class="go-t">识别</span></button>
+        </div>
+        <p class="hint" id="hint" role="status" aria-live="polite"></p>
+        <div class="opts">
+          <div class="opt-group" role="radiogroup" aria-label="画质上限">
+            <b>画质</b>
+            <div class="seg">
+              <label><input type="radio" name="q" value="best" checked><span>最高</span></label>
+              <label><input type="radio" name="q" value="1080"><span>1080p</span></label>
+              <label><input type="radio" name="q" value="720"><span>720p</span></label>
+              <label><input type="radio" name="q" value="480"><span>480p</span></label>
+            </div>
+          </div>
+          <label class="sw"><input type="checkbox" id="subs">字幕</label>
+          <label class="sw"><input type="checkbox" id="gaps">跳过坏分片</label>
+          <label class="sw" title="需要登录、验证或手动点播放的网站"><input type="checkbox" id="headful">显示浏览器窗口</label>
+        </div>
+      </form>
+    </div>
+
+    <section id="listenSec" hidden aria-labelledby="listenH">
+      <div class="sec-head"><h2 id="listenH">正在识别</h2><span class="aside" id="host"></span></div>
+      <div class="listen">
+        <div class="what" id="what">正在打开页面…</div>
+        <div class="counts"><span><b id="nReq">0</b>个请求</span><span class="hot"><b id="nMedia">0</b>个媒体</span><span><b id="secs">0</b>秒</span></div>
+      </div>
+      <ol class="traffic" id="traffic" aria-label="实时请求"></ol>
+    </section>
+
+    <section id="resultSec" hidden aria-labelledby="resultH">
+      <div class="sec-head"><h2 id="resultH">识别结果</h2><span class="aside" id="pageTitle"></span></div>
+      <ul class="tracks" id="tracks"></ul>
+    </section>
+
+    <section aria-labelledby="filesH">
+      <div class="sec-head"><h2 id="filesH">已保存</h2><span class="aside" id="nFiles"></span></div>
+      <ul class="files" id="files"></ul>
+      <p class="dir" id="dir"></p>
+    </section>
+  </main>
+
+  <footer><span>mediagrab 只保存原始码流，从不重新编码。</span><span>受 DRM 保护的内容无法保存。</span></footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag); for (const [k, v] of Object.entries(attrs)) { if (k === 'class') e.className = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); } for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : String(c)); return e; };
+const bytes = n => n == null ? '' : n >= 1073741824 ? (n / 1073741824).toFixed(2) + ' GB' : n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const dur = s => { if (!s) return ''; s = Math.round(s); const m = Math.floor(s / 60), r = s % 60; return m >= 60 ? `${Math.floor(m / 60)} 小时 ${m % 60} 分` : m ? `${m} 分 ${r} 秒` : `${r} 秒`; };
+const KIND = { hls: ['HLS', '分片流'], dash: ['DASH', '分片流'], file: ['文件', '直链'], unknown: ['链接', '待检测'] };
+const LANE = { video: '画面', audio: '声音', subs: '字幕', capture: '播放器缓冲' };
+const isAudioType = t => /^audio\//.test(t || '');
+let analysisId = null, timer = null;
+
+/* ---------- analyze ---------- */
+$('#f').addEventListener('submit', async e => {
+  e.preventDefault();
+  let url = $('#url').value.trim(); if (!url) return;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) { url = 'https://' + url.replace(/^\/\//, ''); $('#url').value = url; }
+  setBusy(true); hint('');
+  $('#resultSec').hidden = true; $('#tracks').replaceChildren();
+  $('#listenSec').hidden = false; $('#traffic').replaceChildren(); $('#nReq').textContent = 0; $('#nMedia').textContent = 0; $('#secs').textContent = 0;
+  let host = url; try { host = new URL(url).host; } catch {}
+  $('#host').textContent = host; $('#what').innerHTML = `正在打开 <strong></strong>`; $('#what strong').textContent = host;
+  const t0 = Date.now(); clearInterval(timer); timer = setInterval(() => $('#secs').textContent = Math.round((Date.now() - t0) / 1000), 500);
+  $('#listenSec').scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  try {
+    const r = await post('/api/analyze', { url, headful: $('#headful').checked });
+    let nReq = 0, nMedia = 0;
+    await stream(r.job, ev => {
+      if (ev.type === 'traffic') { nReq++; $('#nReq').textContent = nReq; addTraffic(ev); if (nReq === 1) $('#what').innerHTML = '正在记录播放器发出的请求'; }
+      else if (ev.type === 'candidate') { nMedia++; $('#nMedia').textContent = nMedia; }
+      else if (ev.type === 'log' && /opening/.test(ev.msg)) { /* initial */ }
+      else if (ev.type === 'analysis') { analysisId = ev.id; renderResults(ev); }
+      else if (ev.type === 'error') throw new Error(ev.msg);
+    });
+  } catch (err) { hint('没能完成识别：' + err.message, true); $('#listenSec').hidden = true; }
+  clearInterval(timer); setBusy(false);
+});
+
+function setBusy(b) { const g = $('#go'); g.setAttribute('aria-busy', b); g.disabled = b; $('.go-t').textContent = b ? '识别中' : '识别'; }
+function hint(msg, err) { const p = $('#hint'); p.textContent = msg; p.classList.toggle('err', !!err); }
+
+function addTraffic(t) {
+  const list = $('#traffic');
+  let path = t.url; try { const u = new URL(t.url); path = u.host + u.pathname + (u.search ? u.search.slice(0, 24) : ''); } catch {}
+  const label = { hls: 'HLS 清单', dash: 'DASH 清单', file: '媒体文件', segment: '分片', other: '请求', subtitle: '字幕' }[t.kind] || '请求';
+  const li = h('li', { class: 'k-' + t.kind }, h('span', { class: 'g', 'aria-hidden': 'true' }), h('span', { class: 'kind' }, label),
+    h('span', { class: 'u', title: t.url }, h('bdi', {}, path)), h('span', { class: 'st' + (t.status >= 400 ? ' bad' : '') }, t.status >= 400 ? t.status : (t.size ? bytes(t.size) : t.status)));
+  list.prepend(li); while (list.children.length > 12) list.lastChild.remove();
+}
+
+/* ---------- results ---------- */
+const SITES = { youtube: 'YouTube', youtubetab: 'YouTube', bilibili: '哔哩哔哩', bilibilibangumi: '哔哩哔哩', twitter: 'X', tiktok: 'TikTok', instagram: 'Instagram', facebook: 'Facebook',
+  vimeo: 'Vimeo', twitchvod: 'Twitch', twitchstream: 'Twitch', dailymotion: 'Dailymotion', soundcloud: 'SoundCloud', reddit: 'Reddit', generic: '网页', html5mediaembed: '网页' };
+const siteName = e => SITES[String(e || '').toLowerCase()] || e || '站点';
+function specOf(c) {
+  const s = c.summary || {};
+  if (c.kind === 'site') {
+    const res = s.height ? `${s.width ? s.width + ' × ' : ''}${s.height}` : s.vcodec === 'none' ? '音频' : s.vcodec ? '视频' : '媒体文件';
+    return s.heights?.length > 1 ? `${res}，共 ${s.heights.length} 档清晰度` : res;
+  }
+  if (c.kind === 'hls' || c.kind === 'dash') {
+    if (s.drm) return '受 DRM 保护，无法保存';
+    const res = s.width ? `${s.width} × ${s.height}` : (s.master === false || s.segments ? '单一码率' : '分片流');
+    return s.master && s.variants > 1 ? `${res}，共 ${s.variants} 档清晰度` : res;
+  }
+  if (c.kind === 'file') return isAudioType(c.type) ? '音频文件' : '视频文件';
+  return '待检测的链接';
+}
+function factsOf(c) {
+  const s = c.summary || {}; const f = [];
+  if (c.kind === 'site') {
+    if (s.duration) f.push('时长 ' + dur(s.duration));
+    if (s.uploader) f.push(s.uploader);
+    if (s.chapters) f.push(`${s.chapters} 个章节`);
+    if (s.audioLangs?.length > 1) f.push(`${s.audioLangs.length} 种语言音轨`);
+    if (s.subtitles?.length) f.push(`${s.subtitles.length} 种字幕`);
+    if (s.live) f.push('直播');
+    return f;
+  }
+  if (s.duration) f.push('时长 ' + dur(s.duration));
+  if (s.bandwidth) f.push(Math.round(s.bandwidth / 1000) + ' kbps');
+  if (s.audioTracks) f.push(`${s.audioTracks} 条独立音轨`);
+  if (s.encrypted) f.push(`${s.encrypted} 加密，可解`);
+  if (s.live) f.push('直播');
+  if (c.size && c.kind === 'file') f.push(bytes(c.size));
+  if (c.type && c.kind === 'file') f.push(c.type);
+  if (c.note) f.push('清单暂时打不开，下载时会改用浏览器重试');
+  return f;
+}
+function renderResults(a) {
+  const list = $('#tracks'); list.replaceChildren();
+  $('#pageTitle').textContent = a.title || '';
+  $('#listenSec').hidden = true; $('#resultSec').hidden = false;
+  const usable = a.candidates.filter(c => !c.error && !c.summary?.drm && c.kind !== 'subtitle');
+  a.candidates.forEach(c => {
+    const off = !!(c.error || c.summary?.drm);
+    const [k1, k2] = c.kind === 'site' ? [siteName(c.summary?.extractor), 'yt-dlp 解析'] : (KIND[c.kind] || [c.kind, '']);
+    let src = c.inline ? '页面脚本生成的播放列表' : c.url; try { if (!c.inline) { const u = new URL(c.url); src = u.host + u.pathname; } } catch {}
+    const isBest = usable[0] === c;
+    const btn = h('button', { class: 'act' + (isBest ? ' primary' : ''), disabled: off, onclick: () => download(c.id, li, btn) }, '下载');
+    const li = h('li', { class: 'track' + (off ? ' disabled' : '') },
+      h('div', { class: 'track-main' },
+        h('div', { class: 'kindtag' }, k1, h('small', {}, c.inline ? '页面内生成' : k2)),
+        h('div', {}, h('div', { class: 'spec' }, specOf(c), isBest && usable.length > 1 ? h('span', { class: 'best' }, '推荐') : null),
+          h('div', { class: 'facts' }, factsOf(c).map(x => h('span', {}, x))), h('div', { class: 'src' }, c.inline ? src : h('button', { class: 'copy', title: '复制原始链接', onclick: e => copy(e.currentTarget, c.url, src) }, src))),
+        btn),
+      h('div', { class: 'job' }, h('div', {}, h('div', { class: 'job-in' }))));
+    list.append(li);
+  });
+  if (a.mseSeen) {
+    const li = h('li', { class: 'track' });
+    const btn = h('button', { class: 'act' + (usable.length ? '' : ' primary'), onclick: () => download('capture', li, btn) }, '开始录制');
+    li.append(h('div', { class: 'track-main' }, h('div', { class: 'kindtag' }, '录制', h('small', {}, '兜底方案')),
+      h('div', {}, h('div', { class: 'spec' }, '录下播放器缓冲的数据'), h('div', { class: 'facts' }, h('span', {}, '链接被混淆、上面没有可用结果时使用。会加速播放并逐字节保存，依然无损。'))), btn),
+      h('div', { class: 'job' }, h('div', {}, h('div', { class: 'job-in' }))));
+    list.append(li);
+  }
+  if (!a.candidates.length && !a.mseSeen) list.append(h('li', { class: 'empty' }, a.navError
+    ? `页面没能打开（${a.navError}）。检查链接是否完整、协议是 http 还是 https；需要登录的网站，打开「显示浏览器窗口」再试。`
+    : '这个页面里没有找到音视频。打开「显示浏览器窗口」再识别一次，在弹出的窗口里登录或点一下播放。'));
+  const first = list.querySelector('.act.primary'); first?.focus({ preventScroll: true });
+}
+
+/* ---------- download with segment mosaic ---------- */
+async function download(cand, li, btn) {
+  const isCap = cand === 'capture';
+  btn.disabled = true; btn.classList.add('busy'); btn.textContent = isCap ? '录制中' : '下载中';
+  const job = li.querySelector('.job'), inner = job.querySelector('.job-in');
+  inner.replaceChildren(); const status = h('p', { class: 'status', role: 'status', 'aria-live': 'polite' }, '准备中…'); inner.append(status);
+  requestAnimationFrame(() => job.classList.add('open'));
+  const lanes = new Map(); const warns = [];
+  try {
+    const r = await post('/api/download', { analysis: analysisId, candidate: cand, quality: document.querySelector('[name=q]:checked').value, subs: $('#subs').checked, allowGaps: $('#gaps').checked });
+    await stream(r.job, ev => {
+      if (ev.type === 'progress') lane(inner, lanes, ev, status).update(ev);
+      else if (ev.type === 'log') { if (ev.level === 'warn') warns.push(ev.msg); status.textContent = humanize(ev.msg); status.className = 'status' + (ev.level === 'warn' ? ' warn' : ''); }
+      else if (ev.type === 'done') {
+        for (const l of lanes.values()) l.finish();
+        status.className = 'status'; status.textContent = ev.warnings.length ? '已保存，但有提示：' + ev.warnings.join('；') : '已保存，和源站码流完全一致。';
+        if (ev.warnings.length) status.classList.add('warn');
+        inner.append(h('div', { class: 'saved' }, ev.files.map(f => h('a', { href: '#file-' + encodeURIComponent(f), onclick: e => { e.preventDefault(); openFile(f); } }, f))));
+        btn.textContent = '已保存'; btn.classList.remove('primary', 'busy'); btn.classList.add('done');
+        loadFiles();
+      } else if (ev.type === 'error') throw new Error(ev.msg);
+    });
+  } catch (err) { status.className = 'status err'; status.textContent = '下载失败：' + err.message; btn.disabled = false; btn.classList.remove('busy'); btn.textContent = isCap ? '重新录制' : '重试'; }
+}
+function humanize(m) {
+  const rules = [
+    [/^opening .*/, '正在打开页面…'],
+    [/^HLS: (\d+)x(\d+) @ (\d+)kbps \(best of (\d+)\)(.*)$/, (x, w, h, k, n, rest) => `选中 ${w}×${h}，${k} kbps（${n} 档里最高）${rest.replace(/, separate audio(?: \[(\w+)\])?/, (y, l) => '，含独立音轨' + (l ? `（${l}）` : ''))}`],
+    [/^HLS: single variant(.*)$/, '单一码率的 HLS 流'],
+    [/^DASH: video (\d+)x(\d+) \S+ (\d+)kbps(.*)$/, (x, w, h, k) => `选中 ${w}×${h}，${k} kbps`],
+    [/^\s*(video|audio|subs): (\d+)x(\d+) \S+ (\d+)kbps, (\d+) segments$/, (x, t, w, h, k, n) => `${LANE[t]}：${w}×${h}，${k} kbps，${n} 个分片`],
+    [/^\s*(video|audio|subs): \S+ (\d+)kbps, (\d+) segments$/, (x, t, k, n) => `${LANE[t]}：${k} kbps，${n} 个分片`],
+    [/^\s*(video|audio|subs): (\d+) segments, ([\d.]+)s(, (AES-128))?$/, (x, t, n, d, y, e) => `${LANE[t]}：${n} 个分片，${Math.round(d)} 秒${e ? '，AES-128 加密（可解）' : ''}`],
+    [/^\s*(video|audio): live stream.*/, '直播：持续录制，直到直播结束'],
+    [/^\s*.+: (\d+) chunk\(s\), (\d+) remaining, (\d+) connection\(s\)$/, (x, n, r, c) => `分 ${n} 块，${c} 路并行下载${r < n ? `，续传剩余 ${r} 块` : ''}`],
+    [/^capture mode.*/, '正在加速播放并录制…'],
+    [/^using yt-dlp ([\d.]+) for (.*)$/, '用 yt-dlp $1 解析 $2'],
+    [/^yt-dlp ([\d.]+): (\S+)\s*(\d+)x(\d+)?.*$/, (x, v, e, w, h) => `yt-dlp 解析 ${e}${h ? `，最高 ${w}×${h}` : ''}`],
+    [/^yt-dlp ([\d.]+): (\S+)\s*$/, 'yt-dlp 解析 $2'],
+    [/^\s*(video|audio): format (\S+) \((.*)\)$/, (x, t, f, c) => `${LANE[t]}：格式 ${f}（${c}）`],
+    [/^yt-dlp download failed \((.*)\); falling back.*/, 'yt-dlp 没能下载（$1），改为录制播放器缓冲'],
+    [/^yt-dlp found media via its (\S+) extractor/, '页面上没抓到直链，yt-dlp 的 $1 解析器找到了媒体'],
+    [/^\s*capturing SourceBuffer (\w+)\/([\w-]+).*/, (x, t, c) => `正在录制${t === 'audio' ? '声音' : '画面'}轨（${c}）`],
+    [/^\s*captured ([\d.]+MB) in (\d+) appends/, '已录下 $1，共 $2 段'],
+    [/no new media data for a while.*/, '播放器一段时间没有新数据，结束录制'],
+    [/stream changed format (\d+) time.*/, '播放中切换过 $1 次清晰度'],
+    [/direct download failed \((.*)\); retrying through the browser/, '直连被拒绝（$1），改由浏览器继续下载'],
+    [/in-browser download failed too.*/, '浏览器内下载也失败了，改为录制播放器缓冲'],
+    [/(\d+) segment\(s\) could not be downloaded.*/, '$1 个分片始终下载失败，已跳过'],
+    [/^segment (\d+) skipped: (.*)/, '跳过第 $1 个分片：$2'],
+  ];
+  for (const [re, to] of rules) if (re.test(m)) return m.replace(re, to);
+  return m.trim();
+}
+function lane(inner, lanes, ev, status) {
+  const key = ev.label || 'file'; if (lanes.has(key)) return lanes.get(key);
+  const name = LANE[key] || '文件';
+  const head = h('div', { class: 'lane-head' }, h('span', {}, h('b', {}, name), h('span', { class: 'cnt' })), h('span', { class: 'rate' }));
+  const body = ev.total ? h('div', { class: 'mosaic', role: 'progressbar', 'aria-label': name + '下载进度', 'aria-valuemin': 0, 'aria-valuemax': 100 }) : h('div', { class: key === 'capture' ? 'rec' : 'status' }, key === 'capture' ? '录制中' : '正在下载');
+  const el = h('div', { class: 'lane' }, head, body); inner.insertBefore(el, status);
+  let cells = [], per = 1, samples = [];
+  if (ev.total) { const n = ev.unit === 'pct' ? 50 : Math.min(ev.total, 600); per = ev.total / n;
+    const cols = n <= 60 ? n : Math.min(60, Math.ceil(n / Math.ceil(n / 60))); body.style.setProperty('--cols', cols); body.classList.toggle('strip', n <= 60);
+    for (let i = 0; i < n; i++) { const c = h('i'); c.style.setProperty('--d', i); cells.push(c); } body.append(...cells); }
+  const L = {
+    update(e) {
+      const now = performance.now(); samples.push([now, e.bytes || 0]); while (samples.length > 2 && now - samples[0][0] > 4000) samples.shift();
+      const [t0, b0] = samples[0]; const rate = now > t0 + 300 ? ((e.bytes - b0) / ((now - t0) / 1000)) : 0;
+      head.querySelector('.rate').textContent = bytes(e.bytes) + (rate > 0 ? `，${bytes(rate)}/s` : '');
+      if (e.total) {
+        head.querySelector('.cnt').textContent = e.unit === 'pct' ? `${e.done}%` : `${e.done} / ${e.total}`;
+        const lit = Math.floor(e.done / per); for (let i = 0; i < lit && i < cells.length; i++) if (!cells[i].classList.contains('on')) cells[i].classList.add('on');
+        body.setAttribute('aria-valuenow', Math.round(100 * e.done / e.total));
+      } else body.textContent = key === 'capture' ? `录制中，已保存 ${bytes(e.bytes)}` : `已下载 ${bytes(e.bytes)}`;
+    },
+    finish() { if (cells.length) { cells.forEach(c => c.classList.add('on')); body.classList.add('complete'); } else body.className = 'status', body.textContent = '录制完成'; },
+  };
+  lanes.set(key, L); return L;
+}
+
+/* ---------- files ---------- */
+async function loadFiles() {
+  const r = await fetch('/api/files').then(r => r.json()).catch(() => null); if (!r) return;
+  $('#dir').textContent = '保存位置：' + r.dir; $('#nFiles').textContent = r.files.length ? `${r.files.length} 个文件` : '';
+  const list = $('#files'); const open = new Set([...list.querySelectorAll('.file.open')].map(x => x.dataset.name));
+  list.replaceChildren(...(r.files.length ? r.files.map(f => fileRow(f, open.has(f.name))) : [h('li', { class: 'empty' }, '下载完成的文件会出现在这里，点开就能直接播放。')]));
+}
+function fileRow(f, isOpen) {
+  const src = '/files/' + encodeURIComponent(f.name);
+  const audio = /\.(m4a|mp3|aac|opus|ogg|flac|wav|weba)$/i.test(f.name), playable = audio || /\.(mp4|webm|mkv|mov|m4v)$/i.test(f.name);
+  const holder = h('div');
+  const li = h('li', { class: 'file' + (isOpen ? ' open' : ''), id: 'file-' + encodeURIComponent(f.name), 'data-name': f.name },
+    h('div', { class: 'file-row' },
+      h('button', { class: 'file-name', 'aria-expanded': String(!!isOpen), disabled: !playable, onclick: () => toggle(li) },
+        h('span', { class: 'tri', 'aria-hidden': 'true' }), h('span', {}, f.name)),
+      h('span', { class: 'file-meta' }, `${bytes(f.size)}，${new Date(f.mtime).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`),
+      h('a', { class: 'file-dl', href: src + '?dl', download: f.name }, '另存为')),
+    h('div', { class: 'player' }, h('div', {}, holder)));
+  li.querySelector('.tri').innerHTML = '<svg width="8" height="10" viewBox="0 0 8 10"><path d="M0 0l8 5-8 5z" fill="currentColor"/></svg>';
+  li._mount = () => { if (!holder.firstChild && playable) holder.append(h(audio ? 'audio' : 'video', { src: audio ? src : src + '#t=0.1', controls: true, preload: 'metadata', playsinline: true })); };
+  if (isOpen) li._mount();
+  return li;
+}
+function toggle(li) {
+  const open = !li.classList.contains('open'); if (open) li._mount();
+  li.classList.toggle('open', open); li.querySelector('.file-name').setAttribute('aria-expanded', open);
+  if (!open) li.querySelector('video,audio')?.pause();
+}
+async function openFile(name) {
+  await loadFiles(); const li = document.getElementById('file-' + encodeURIComponent(name)); if (!li) return;
+  if (!li.classList.contains('open')) toggle(li);
+  li.scrollIntoView({ behavior: 'smooth', block: 'center' }); li.querySelector('.file-name').focus({ preventScroll: true });
+}
+
+function copy(el, text, label) {
+  navigator.clipboard?.writeText(text).then(() => { el.textContent = '已复制原始链接'; el.classList.add('ok'); setTimeout(() => { el.textContent = label; el.classList.remove('ok'); }, 1400); }).catch(() => {});
+}
+/* ---------- plumbing ---------- */
+async function post(url, body) { const r = await fetch(url, { method: 'POST', body: JSON.stringify(body) }).then(r => r.json()); if (r.error) throw new Error(r.error); return r; }
+function stream(job, on) {
+  return new Promise((resolve, reject) => {
+    const es = new EventSource('/api/events/' + job);
+    es.onmessage = m => { const ev = JSON.parse(m.data); try { on(ev); } catch (e) { es.close(); return reject(e); } if (ev.type === 'done') { es.close(); resolve(); } };
+    es.onerror = () => { es.close(); reject(new Error('与本地服务的连接断开了')); };
+  });
+}
+addEventListener('keydown', e => { if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $('#url').focus(); $('#url').select(); } });
+loadFiles();
+</script>
+</body>
+</html>

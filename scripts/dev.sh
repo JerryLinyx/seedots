@@ -21,7 +21,7 @@ if [ ! -d apps/web/node_modules ]; then
 fi
 
 trap 'kill 0' EXIT
-(cd services && "$PY" -m uvicorn seedots.media.api:app --port 8001 --log-level info) &
-(cd services && "$PY" -m uvicorn seedots.learning.api:app --port 8000 --log-level info) &
+(cd services && "$PY" -m uvicorn --factory seedots.media.api:create_app --port 8001 --log-level info) &
+(cd services && "$PY" -m uvicorn --factory seedots.learning.api:create_app --port 8000 --log-level info) &
 (cd apps/web && npm run dev) &
 wait
