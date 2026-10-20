@@ -38,7 +38,9 @@ services/
   migrations/                Alembic，每个服务一套
 docs/prd.md                  需求文档（做什么，R01–R27）
 docs/tech-plan.md            技术方案（怎么做，含需求追溯；和代码一起维护）
+docs/api.md                  接口文档（与路由由测试保证一致）
 docs/database.md             数据库设计
+docs/progress.md             开发进度：任务、里程碑、周报
 ```
 
 ## 快速开始（macOS）

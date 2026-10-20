@@ -12,6 +12,10 @@
 ## Other docs
 - `docs/prd.md`: product requirements (what to build), R01–R27 / S1–S10. Same editing rules as the plan; keep
   its §5 status column and the plan's §11 traceability table in sync when a requirement's status changes.
+- `docs/api.md`: HTTP API of both services. Adding/removing/renaming a route => update it in the same commit
+  (`tests/test_api_doc.py` fails otherwise).
+- `docs/progress.md`: tasks (T01…), milestones, weekly log. Update a task's status when you start or finish it,
+  with the commit hash.
 - `docs/database.md`: schema design and migration history. New migration => add a line there.
 - `README.md`: structure, setup, deviations from the plan.
 
