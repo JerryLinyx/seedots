@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 
 from seedots.common.llm import FakeToolCall
 
-STOP = set("""the a an and or but of to in on for with that this these those is are was were be been being it its as at by
-from into about than then there their they them you your we our i me my he she his her not no so if what which who
-when where how why can could would should will just also very more most some any all one two like get got do does did
-have has had going really actually because know think kind sort lot thing things way make made see look okay right
-sentence explains behaves during training""".split())
+from seedots.common.llm.phrases import phrases
 
 
 def _sentences(text: str) -> list[tuple[str, str]]:
@@ -22,12 +17,13 @@ def _sentences(text: str) -> list[tuple[str, str]]:
 def learning_brain(task: str, system: str, user: str):
     if task == "concepts":
         sents = _sentences(user)
-        words = Counter(w for _, t in sents for w in re.findall(r"[a-zA-Z]{5,}", t.lower()) if w not in STOP)
         concepts = []
-        for w, _ in words.most_common(2):
-            ev = [sid for sid, t in sents if w in t.lower()][:4]
-            concepts.append({"name": w, "aliases": [], "definition": f"What the video calls {w}.", "role": "defined",
-                             "evidence": ev, "misconceptions": [{"id": f"{w}_confusion", "text": f"{w} means something else"}]})
+        for name in phrases([t for _, t in sents], 3):
+            ev = [sid for sid, t in sents if name in t.lower()][:4] or [sents[0][0]]
+            slug = name.replace(" ", "_")
+            concepts.append({"name": name, "aliases": [], "definition": f"What the video calls {name}.",
+                             "role": "defined", "evidence": ev,
+                             "misconceptions": [{"id": f"{slug}_confusion", "text": f"{name} means something else"}]})
         return json.dumps({"concepts": concepts})
     if task == "items":
         sents = _sentences(user)
@@ -82,8 +78,10 @@ def learning_brain(task: str, system: str, user: str):
         name = re.search(r"Concept: (.+)", user).group(1).strip()
         sid = re.search(r"^(s\d{4}) ", user, flags=re.M)
         cite = f" [{sid.group(1)}]" if sid else ""
-        return json.dumps({"title": name, "body": f"**{name}** is what the video explains here{cite}. "
-                                                   f"Watch for the common mistake of confusing it with a neighbour idea."})
+        quote = re.search(r"^s\d{4} \([^)]*\) (.+)$", user, flags=re.M)
+        return json.dumps({"title": name.capitalize(), "body": (
+            f"{name.capitalize()}: {quote.group(1) if quote else 'what the video explains here'}{cite}\n\n"
+            f"Watch for the usual mix-up of treating it as a neighbouring idea. (offline draft)")})
     if task == "coach":
         if "other video" in user.lower() and "<tool concept_elsewhere>" not in user:
             first = re.search(r"Concepts here and common mistakes: ([^(;\n]+)", system)

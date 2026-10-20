@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 
 export type PlayerHandle = {
   time(): number;
+  duration(): number;
   playing(): boolean;
   rate(): number;
   seek(t: number): void;
@@ -87,6 +88,7 @@ export const YouTubePlayer = forwardRef<PlayerHandle, { videoId: string; onError
 
     useImperativeHandle(ref, () => ({
       time: () => player.current?.getCurrentTime?.() ?? 0,
+      duration: () => player.current?.getDuration?.() ?? 0,
       playing: () => player.current?.getPlayerState?.() === 1,
       rate: () => player.current?.getPlaybackRate?.() ?? 1,
       seek: (t) => player.current?.seekTo?.(t, true),
@@ -104,12 +106,13 @@ export const YouTubePlayer = forwardRef<PlayerHandle, { videoId: string; onError
 
 /* ------------------------------------------------------------------ own / uploaded files */
 
-export const FilePlayer = forwardRef<PlayerHandle, { src: string; tracks?: { src: string; lang: string }[] }>(
-  function FilePlayer({ src }, ref) {
+export const FilePlayer = forwardRef<PlayerHandle, { src: string; onError?: (msg: string) => void }>(
+  function FilePlayer({ src, onError }, ref) {
     const v = useRef<HTMLVideoElement>(null);
     const [, force] = useState(0);
     useImperativeHandle(ref, () => ({
       time: () => v.current?.currentTime ?? 0,
+      duration: () => (v.current && isFinite(v.current.duration) ? v.current.duration : 0),
       playing: () => !!v.current && !v.current.paused && !v.current.ended,
       rate: () => v.current?.playbackRate ?? 1,
       seek: (t) => {
@@ -121,7 +124,7 @@ export const FilePlayer = forwardRef<PlayerHandle, { src: string; tracks?: { src
     }));
     return (
       <div className="player-frame">
-        <video ref={v} src={src} controls playsInline crossOrigin="anonymous" />
+        <video ref={v} src={src} controls playsInline preload="metadata" onError={() => onError?.("This file could not be played in the browser.")} />
       </div>
     );
   },

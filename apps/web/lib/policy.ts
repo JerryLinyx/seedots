@@ -1,4 +1,4 @@
-import type { Action, Chapter, Item, Settings, Signal } from "./types";
+import type { Action, Chapter, ConceptHere, Item, Settings, Signal } from "./types";
 
 /**
  * Intervention policy (front end). Turns raw playback into signals and enforces the hard
@@ -27,11 +27,13 @@ export class InterventionPolicy {
   private mutedUntil: Partial<Record<Action, number>> = {};
   private firedChapterEnds = new Set<string>();
   private firedPredicts = new Set<string>();
+  private firedLinks = new Set<string>();
 
   constructor(
     private getSettings: () => Settings,
     private getChapters: () => Chapter[],
     private getItems: () => Item[],
+    private getConcepts: () => ConceptHere[],
     private emit: (signal: Signal, userInitiated: boolean) => void,
     private log: (type: string, t: number, payload?: Record<string, unknown>) => void,
   ) {}
@@ -74,14 +76,28 @@ export class InterventionPolicy {
       }
       const soon = this.getItems().find(
         (i) =>
-          i.type === "predict" && !i.attempted && i.show_at !== null && !this.firedPredicts.has(i.id) &&
-          i.show_at - now.t > 3 && i.show_at - now.t <= PREDICT_LEAD,
+          i.type === "predict" && !i.attempted && i.show_before !== null && !this.firedPredicts.has(i.id) &&
+          i.show_before! - now.t > 3 && i.show_before! - now.t <= PREDICT_LEAD,
       );
       if (soon) {
         this.firedPredicts.add(soon.id);
         this.proactive({ kind: "predict_window", t: now.t }, true);
       }
+      // a concept the learner met in another video starts being taught: offer the link once
+      for (const c of this.getConcepts()) {
+        if (!c.elsewhere.length || this.firedLinks.has(c.id)) continue;
+        const first = c.occurrences[0];
+        if (first && prev.t < first.t0 + 4 && now.t >= first.t0 + 4) {
+          this.firedLinks.add(c.id);
+          this.proactive({ kind: "concept_seen_before", t: now.t, concept_id: c.id }, true);
+        }
+      }
     }
+  }
+
+  /** Forget the last tick, e.g. after a programmatic seek (resume) that is not the learner's doing. */
+  reset() {
+    this.last = null;
   }
 
   /** Native players report seeks directly. */

@@ -64,9 +64,10 @@ def sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
 
-def current_user(x_seedots_user: str | None = Header(None)) -> str:
-    """Placeholder for the hosted auth provider: the subject arrives in a header in dev."""
-    uid = (x_seedots_user or "demo").strip()[:64]
+def current_user(x_seedots_user: str | None = Header(None), u: str | None = Query(None)) -> str:
+    """Placeholder for the hosted auth provider: the subject arrives in a header in dev
+    (or `?u=` for media tags, which cannot send headers)."""
+    uid = (x_seedots_user or u or "demo").strip()[:64]
     return uid or "demo"
 
 

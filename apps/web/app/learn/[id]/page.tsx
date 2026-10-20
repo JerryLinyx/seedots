@@ -1,6 +1,11 @@
+import { Suspense } from "react";
 import { LearnView } from "@/components/LearnView";
 
-export default async function LearnPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function Learn({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return <LearnView mediaId={id} />;
+  return (
+    <Suspense>
+      <LearnView mediaId={id} />
+    </Suspense>
+  );
 }

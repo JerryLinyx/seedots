@@ -1,318 +1,484 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, fmt, MEDIA_BASE } from "@/lib/api";
+import { api, ApiError, fmt, mediaUrl } from "@/lib/api";
 import { EventLog } from "@/lib/events";
 import { InterventionPolicy } from "@/lib/policy";
-import type { Action, Mark, Pack, Settings, Signal } from "@/lib/types";
-import { CardView, type Card } from "./Cards";
-import { Coach } from "./Coach";
-import { FilePlayer, YouTubePlayer, type PlayerHandle } from "./Player";
+import type { Decision, MarkType, Pack, Progress, Settings, Signal } from "@/lib/types";
+import { Brand } from "./Brand";
+import { Coach, type CoachHandle } from "./Coach";
+import { DotRail } from "./DotRail";
+import { InterventionCard } from "./InterventionCard";
+import { FilePlayer, type PlayerHandle, YouTubePlayer } from "./Player";
 import { Transcript } from "./Transcript";
 
-const MARKS: { type: Mark["type"]; label: string; key: string }[] = [
-  { type: "useful", label: "Useful", key: "1" },
-  { type: "resonate", label: "Resonates", key: "2" },
-  { type: "confused", label: "Confused", key: "3" },
+type Card = Decision & { userInitiated: boolean; key: string };
+type Tab = "transcript" | "coach" | "concepts";
+
+const MARKS: { type: MarkType; label: string; key: string; color: string }[] = [
+  { type: "useful", label: "Useful", key: "1", color: "var(--pollen)" },
+  { type: "resonate", label: "Resonates", key: "2", color: "var(--lichen)" },
+  { type: "confused", label: "Confusing", key: "3", color: "var(--ember)" },
 ];
 
+const PURPOSES: { value: Settings["purpose"]; label: string }[] = [
+  { value: "interest", label: "Curiosity" },
+  { value: "exam", label: "An exam" },
+  { value: "work", label: "Work" },
+  { value: "research", label: "Research" },
+];
+
+function progressText(p: Progress | null, pack: Pack | null): string | null {
+  const status = p?.status ?? pack?.video.status;
+  if (status === "failed") return p?.detail || pack?.video.status_detail || "Couldn't read this video";
+  const total = p?.chapters_total ?? pack?.chapters.length ?? 0;
+  const done = p?.chapters_done ?? pack?.chapters.filter((c) => c.content_status === "done").length ?? 0;
+  if (!total) return status === "ready" ? null : "Reading the video";
+  if (done < total) return `Preparing questions, ${done} of ${total} chapters`;
+  return null;
+}
+
 export function LearnView({ mediaId }: { mediaId: string }) {
+  const params = useSearchParams();
+  const startAt = Number(params.get("t") || "") || null;
   const [pack, setPack] = useState<Pack | null>(null);
-  const [loadError, setLoadError] = useState("");
-  const [playerError, setPlayerError] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<Progress | null>(null);
   const [now, setNow] = useState(0);
-  const [tab, setTab] = useState<"learn" | "coach">("learn");
+  const [duration, setDuration] = useState(0);
   const [cards, setCards] = useState<Card[]>([]);
-  const [later, setLater] = useState<Card[]>([]);
-  const [dot, setDot] = useState(false);
-  const [pendingQ, setPendingQ] = useState<string | null>(null);
-  const [toast, setToast] = useState("");
+  const [tab, setTab] = useState<Tab>("transcript");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const [flash, setFlash] = useState<MarkType | null>(null);
 
   const player = useRef<PlayerHandle>(null);
+  const coach = useRef<CoachHandle>(null);
   const packRef = useRef<Pack | null>(null);
-  const settingsRef = useRef<Settings>({ focus_mode: false, max_cards_per_5min: 1, purpose: "interest" });
-  const tabRef = useRef(tab);
-  tabRef.current = tab;
+  packRef.current = pack;
   const log = useMemo(() => new EventLog(mediaId), [mediaId]);
+  const seeded = useRef(false);
 
-  /* ------------------------------------------------------------ data */
-  const load = useCallback(async () => {
+  // ---------------------------------------------------------------- data
+  const loadPack = useCallback(async () => {
     try {
       const p = await api.pack(mediaId);
-      packRef.current = p;
-      settingsRef.current = p.settings;
       setPack(p);
-      setLoadError("");
+      setError(null);
       return p;
     } catch (e) {
-      setLoadError((e as Error).message);
+      setError(e instanceof ApiError && e.status === 404 ? "This video isn't in your library." : (e as Error).message);
       return null;
     }
   }, [mediaId]);
 
   useEffect(() => {
-    let stop = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const loop = async () => {
-      const p = await load();
-      const busy =
-        !p || p.video.status === "analyzing" || p.video.status === "registered" ||
-        p.chapters.some((c) => c.content_status === "pending" || c.content_status === "running");
-      if (!stop && busy && p?.video.status !== "failed") timer = setTimeout(loop, 5000);
-    };
-    void loop();
+    let alive = true;
+    void (async () => {
+      const p = await loadPack();
+      if (!p || !alive) return;
+      const settled =
+        p.video.status === "failed" ||
+        (p.video.status === "ready" && p.chapters.length > 0 && p.chapters.every((c) => c.content_status === "done" || c.content_status === "failed"));
+      if (settled) return;
+      try {
+        let lastDone = -1;
+        for await (const { data } of await api.progress(mediaId)) {
+          if (!alive) break;
+          setProgress(data);
+          if (data.chapters_done !== lastDone || data.status === "ready") {
+            lastDone = data.chapters_done;
+            await loadPack();
+          }
+        }
+        await loadPack();
+      } catch {
+        /* the stream ended; the page keeps working with what it has */
+      }
+    })();
     return () => {
-      stop = true;
-      clearTimeout(timer);
+      alive = false;
     };
-  }, [load]);
+  }, [mediaId, loadPack]);
 
-  useEffect(() => {
-    log.start();
-    return () => log.stop();
-  }, [log]);
+  // ---------------------------------------------------------------- policy + decisions
+  const settingsRef = useRef<Settings>({ focus_mode: false, max_cards_per_5min: 1, purpose: "interest", language: "en" });
+  if (pack) settingsRef.current = pack.settings;
 
-  /* ------------------------------------------------------------ decisions */
-  const onSignal = useCallback(
+  const policyRef = useRef<InterventionPolicy | null>(null);
+  const decide = useCallback(
     async (signal: Signal, userInitiated: boolean) => {
-      log.log("signal", signal.t, { ...signal, user_initiated: userInitiated });
       try {
         const d = await api.decide(mediaId, signal);
-        log.log("decision", signal.t, { action: d.action, selector: d.selector, rule_action: d.rule_action });
         if (d.action === "none") return;
-        if (d.action === "explain") {
-          setTab("coach");
-          setPendingQ("I'm confused about what was just said. Can you explain it?");
+        if (!userInitiated && !policyRef.current?.shownCard(d.action)) {
+          void api.outcome(d.decision_id, "suppressed").catch(() => undefined);
           return;
         }
-        if (!userInitiated && !policy.current?.shownCard(d.action)) return;
-        setCards((c) => [{ key: `${Date.now()}`, decision: d, t: signal.t, userInitiated }, ...c].slice(0, 3));
-        log.log("card_shown", signal.t, { action: d.action, item_id: d.item?.id });
-        if (tabRef.current !== "learn") setDot(true);
-      } catch (e) {
-        setToast(`Could not reach the learning service: ${(e as Error).message}`);
+        void api.outcome(d.decision_id, "shown").catch(() => undefined);
+        log.log("card_shown", signal.t, { action: d.action, decision_id: d.decision_id });
+        // one card at a time: a newer moment replaces an older, unanswered one
+        setCards([{ ...d, userInitiated, key: d.decision_id }]);
+      } catch {
+        /* a failed decision never interrupts watching */
       }
     },
-    [log, mediaId],
+    [mediaId, log],
   );
 
-  const policy = useRef<InterventionPolicy | null>(null);
-  if (!policy.current && typeof window !== "undefined") {
-    policy.current = new InterventionPolicy(
+  if (!policyRef.current) {
+    policyRef.current = new InterventionPolicy(
       () => settingsRef.current,
       () => packRef.current?.chapters ?? [],
       () => packRef.current?.items ?? [],
-      (s, u) => void onSignal(s, u),
+      () => packRef.current?.concepts ?? [],
+      (signal, userInitiated) => void decide(signal, userInitiated),
       (type, t, payload) => log.log(type, t, payload),
     );
   }
 
-  /* ------------------------------------------------------------ playback loop */
+  // ---------------------------------------------------------------- playback loop
   useEffect(() => {
-    let beat = 0;
-    const id = setInterval(() => {
+    log.start();
+    const timer = setInterval(() => {
       const p = player.current;
       if (!p) return;
-      const tick = { t: p.time(), playing: p.playing(), rate: p.rate() };
-      setNow(tick.t);
-      policy.current?.tick(tick);
-      if (tick.playing && ++beat % 60 === 0) log.log("heartbeat", tick.t, { rate: tick.rate });
+      const t = p.time();
+      const d = p.duration();
+      if (d && !seeded.current) {
+        seeded.current = true;
+        const resume = startAt ?? (packRef.current?.video.position && packRef.current.video.position > 5 ? packRef.current.video.position : null);
+        if (resume) {
+          p.seek(resume);
+          policyRef.current?.reset();
+        }
+      }
+      setNow(t);
+      if (d) setDuration(d);
+      policyRef.current?.tick({ t, playing: p.playing(), rate: p.rate() });
     }, 250);
-    return () => clearInterval(id);
-  }, [log]);
+    const save = setInterval(() => {
+      const t = player.current?.time();
+      if (t) void api.position(mediaId, t).catch(() => undefined);
+    }, 10_000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(save);
+      log.stop();
+      const t = player.current?.time();
+      if (t) void api.position(mediaId, t).catch(() => undefined);
+    };
+  }, [mediaId, log, startAt]);
 
   const seek = useCallback(
-    (t: number) => {
+    (t: number, otherMedia?: string) => {
+      if (otherMedia && otherMedia !== mediaId) {
+        window.location.href = `/learn/${otherMedia}?t=${Math.floor(t)}`;
+        return;
+      }
+      const from = player.current?.time() ?? 0;
       player.current?.seek(t);
-      log.log("seek_requested", t, { source: "app" });
+      policyRef.current?.onSeek(from, t);
+      setNow(t);
     },
-    [log],
+    [mediaId],
   );
 
-  // deep link from the knowledge map: /learn/<id>?t=123
-  useEffect(() => {
-    const t = Number(new URLSearchParams(window.location.search).get("t"));
-    if (!t) return;
-    const id = setTimeout(() => player.current?.seek(t), 1500);
-    return () => clearTimeout(id);
-  }, []);
-
-  /* ------------------------------------------------------------ marks */
-  const mark = useCallback(
-    async (type: Mark["type"]) => {
-      const t = player.current?.time() ?? 0;
+  // ---------------------------------------------------------------- marks & shortcuts
+  const addMark = useCallback(
+    async (type: MarkType) => {
+      const t = player.current?.time() ?? now;
+      setFlash(type);
+      setTimeout(() => setFlash(null), 450);
       try {
         const m = await api.mark(mediaId, t, type);
-        setPack((p) => (p ? { ...p, marks: [...p.marks, m] } : p));
-        log.log("mark", t, { type });
-        if (type === "confused") policy.current?.user({ kind: "confused_mark", t });
-        else setToast(`Marked “${MARKS.find((x) => x.type === type)?.label}” at ${fmt(m.t)}`);
-      } catch (e) {
-        setToast((e as Error).message);
+        setPack((p) => (p ? { ...p, marks: [...p.marks, m].sort((a, b) => a.t - b.t) } : p));
+      } catch {
+        /* keep watching */
       }
+      if (type === "confused") policyRef.current?.user({ kind: "confused_mark", t });
     },
-    [log, mediaId],
+    [mediaId, now],
   );
 
+  const currentChapter = pack?.chapters.find((c) => c.t0 <= now && now < c.t1) ?? pack?.chapters[0];
+  const quizMe = useCallback(() => {
+    const t = player.current?.time() ?? now;
+    policyRef.current?.user({ kind: "manual", t, chapter_id: currentChapter?.id });
+  }, [now, currentChapter]);
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.metaKey || e.ctrlKey) return;
+    function onKey(e: KeyboardEvent) {
+      const el = e.target as HTMLElement;
+      if (el.closest("input, textarea, select, [contenteditable]") || e.metaKey || e.ctrlKey || e.altKey) return;
       const m = MARKS.find((x) => x.key === e.key);
-      if (m) void mark(m.type);
-    };
+      if (m) void addMark(m.type);
+      else if (e.key === "q") quizMe();
+      else if (e.key === "k" || e.key === " ") {
+        if (el.closest("button, [role=slider]")) return;
+        e.preventDefault();
+        const p = player.current;
+        if (p) (p.playing() ? p.pause() : p.play());
+      }
+    }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mark]);
+  }, [addMark, quizMe]);
 
-  useEffect(() => {
-    if (!toast) return;
-    const id = setTimeout(() => setToast(""), 3500);
-    return () => clearTimeout(id);
-  }, [toast]);
-
-  /* ------------------------------------------------------------ cards */
-  const closeCard = (card: Card, how: "dismissed" | "engaged" | "later") => {
-    setCards((c) => c.filter((x) => x.key !== card.key));
-    const action: Action = card.decision.action;
-    if (how === "later") setLater((l) => [...l, card]);
-    if (!card.userInitiated) {
-      if (how === "dismissed") policy.current?.dismissed(action);
-      else policy.current?.engaged(action);
-    }
-    log.log(`card_${how}`, player.current?.time() ?? 0, { action, item_id: card.decision.item?.id });
-    if (how === "engaged" && card.decision.item) {
-      setPack((p) =>
-        p ? { ...p, items: p.items.map((i) => (i.id === card.decision.item?.id ? { ...i, attempted: true } : i)) } : p,
-      );
-    }
-  };
-
-  const toggleFocus = async () => {
-    const next = !settingsRef.current.focus_mode;
-    const s = await api.putSettings({ focus_mode: next });
-    settingsRef.current = s;
-    setPack((p) => (p ? { ...p, settings: s } : p));
-    setToast(next ? "Focus mode: no interruptions. Use “Quiz me” when you are ready." : "Focus mode off");
-  };
-
-  /* ------------------------------------------------------------ render */
-  if (loadError && !pack) {
-    return (
-      <main className="page narrow">
-        <p className="error">{loadError}</p>
-        <Link href="/">← Back</Link>
-      </main>
-    );
+  async function saveSettings(patch: Partial<Settings>) {
+    setPack((p) => (p ? { ...p, settings: { ...p.settings, ...patch } } : p));
+    const s = await api.saveSettings(patch).catch(() => null);
+    if (s) setPack((p) => (p ? { ...p, settings: s } : p));
   }
-  if (!pack) return <main className="page narrow"><p className="muted">Loading…</p></main>;
 
-  const v = pack.video;
-  const duration = Math.max(1, ...pack.chapters.map((c) => c.t1), ...pack.sentences.map((s) => s.t1));
-  const chapter = pack.chapters.find((c) => c.t0 <= now && now < c.t1);
-  const concepts = pack.concepts.filter((c) => c.occurrences.some((o) => chapter && o.chapter_id === chapter.id));
-  const ready = pack.chapters.filter((c) => c.content_status === "done").length;
+  function askCoach(q: string) {
+    setTab("coach");
+    setTimeout(() => coach.current?.ask(q), 0);
+  }
+
+  // ---------------------------------------------------------------- render
+  const status = progressText(progress, pack);
+  const failed = (progress?.status ?? pack?.video.status) === "failed";
+  const chIndex = pack && currentChapter ? pack.chapters.indexOf(currentChapter) : -1;
+  const D = duration || pack?.video.duration || 0;
 
   return (
-    <div className="learn">
-      <aside className="rail">
-        <Link href="/" title="Library">⌂</Link>
-        <Link href="/map" title="Knowledge map">◎</Link>
-      </aside>
-
-      <section className="center">
-        <header className="video-head">
-          <h1>{v.title || "Untitled"}</h1>
-          <p className="muted small">
-            {v.platform_meta.channel ? `${v.platform_meta.channel} · ` : ""}
-            {v.status === "ready"
-              ? `${ready}/${pack.chapters.length} chapters prepared`
-              : v.status === "failed" ? `Failed: ${v.status_detail}` : `Preparing: ${v.status_detail || v.status}`}
-          </p>
-        </header>
-
-        {v.capabilities.playback === "youtube_embed" && v.platform_meta.video_id ? (
-          <YouTubePlayer ref={player} videoId={v.platform_meta.video_id as string} onError={setPlayerError} />
-        ) : (
-          <FilePlayer ref={player} src={`${MEDIA_BASE}/v1/media/${v.media_id}/file`} />
+    <>
+      <header className="topbar ruled">
+        <Brand />
+        <span className="topbar-title" title={pack?.video.title}>
+          {pack?.video.title}
+        </span>
+        <span className="spacer" />
+        {status && (
+          <span className={`status-line${failed ? " failed" : ""}`} role="status">
+            <i aria-hidden="true" />
+            {status}
+          </span>
         )}
-        {playerError && <p className="error">{playerError}</p>}
-
-        <div className="toolbar">
-          <button onClick={() => { setTab("coach"); }} title="Ask about the current moment">Ask about this moment</button>
-          {MARKS.map((m) => (
-            <button key={m.type} onClick={() => void mark(m.type)} title={`Shortcut: ${m.key}`}>
-              {m.label} <kbd>{m.key}</kbd>
-            </button>
-          ))}
-          <span className="spacer" />
-          <button onClick={() => policy.current?.user({ kind: "manual", t: now })}>Quiz me</button>
-          <label className="switch">
-            <input type="checkbox" checked={pack.settings.focus_mode} onChange={() => void toggleFocus()} /> Focus
-          </label>
-        </div>
-
-        <div className="timeline" onClick={(e) => {
-          const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
-          seek(((e.clientX - r.left) / r.width) * duration);
-        }}>
-          {pack.chapters.map((c) => (
-            <div key={c.id} className={`seg ${c.content_status}`} style={{ left: `${(c.t0 / duration) * 100}%`, width: `${((c.t1 - c.t0) / duration) * 100}%` }} title={`${c.title} (${c.content_status})`} />
-          ))}
-          {pack.marks.map((m) => (
-            <span key={m.id} className={`pin ${m.type}`} style={{ left: `${(m.t / duration) * 100}%` }} title={`${m.type} ${fmt(m.t)}`} />
-          ))}
-          <span className="playhead" style={{ left: `${(now / duration) * 100}%` }} />
-        </div>
-
-        <Transcript sentences={pack.sentences} chapters={pack.chapters} now={now} onSeek={seek} />
-      </section>
-
-      <aside className="side">
-        <div className="now">
-          <span className="muted small">{fmt(now)}</span>
-          <strong>{chapter?.title || "—"}</strong>
-          {concepts.length > 0 && <span className="muted small">{concepts.map((c) => c.name).join(" · ")}</span>}
-        </div>
-        <div className="tabs">
-          <button className={tab === "learn" ? "on" : ""} onClick={() => { setTab("learn"); setDot(false); }}>
-            Learn{dot && <i className="dot" />}
+        <nav aria-label="Main">
+          <Link className="btn btn-quiet" href="/map">
+            <span className="wide-only">Knowledge map</span><span className="narrow-only">Map</span>
+          </Link>
+          <button
+            className="btn btn-quiet"
+            aria-expanded={settingsOpen}
+            aria-controls="study-settings"
+            onClick={() => setSettingsOpen((o) => !o)}
+          >
+            <span className="wide-only">Study settings</span><span className="narrow-only">Settings</span>
           </button>
-          <button className={tab === "coach" ? "on" : ""} onClick={() => setTab("coach")}>Coach</button>
-        </div>
-        <div className="tab-body" hidden={tab !== "learn"}>
-          {cards.length === 0 && (
-            <div className="empty">
-              <p>Cards appear at natural pauses: the end of a chapter, after you rewind, or before a reveal.</p>
-              <p className="muted small">
-                {pack.items.length} items ready · {pack.settings.focus_mode ? "focus mode on" : `at most ${pack.settings.max_cards_per_5min} card per 5 min`}
+        </nav>
+        {settingsOpen && pack && (
+          <div className="pop" id="study-settings" role="dialog" aria-label="Study settings">
+            <h3>How SeeDots joins in</h3>
+            <label className="toggle">
+              <span>Focus mode: no prompts until I ask</span>
+              <input
+                type="checkbox"
+                checked={pack.settings.focus_mode}
+                onChange={(e) => void saveSettings({ focus_mode: e.target.checked })}
+              />
+            </label>
+            <label>
+              <span>At most {pack.settings.max_cards_per_5min} prompt{pack.settings.max_cards_per_5min === 1 ? "" : "s"} every five minutes</span>
+              <input
+                type="range"
+                min={0}
+                max={4}
+                value={pack.settings.max_cards_per_5min}
+                onChange={(e) => void saveSettings({ max_cards_per_5min: Number(e.target.value) })}
+              />
+            </label>
+            <label>
+              <span>I'm learning this for</span>
+              <select value={pack.settings.purpose} onChange={(e) => void saveSettings({ purpose: e.target.value as Settings["purpose"] })}>
+                {PURPOSES.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="btn" onClick={() => setSettingsOpen(false)}>
+              Done
+            </button>
+          </div>
+        )}
+      </header>
+
+      {error ? (
+        <main className="home">
+          <div className="sky-empty" style={{ position: "static", minHeight: "60vh" }}>
+            <div>
+              <h2>{error}</h2>
+              <p>
+                <Link href="/">Add it from the home page</Link> and it will open here.
               </p>
             </div>
-          )}
-          {cards.map((c) => (
-            <CardView key={c.key} card={c} onSeek={seek} onClose={closeCard}
-              onAsk={(q) => { setTab("coach"); setPendingQ(q); }}
-              log={(type, payload) => log.log(type, player.current?.time() ?? 0, payload)} />
-          ))}
-          {later.length > 0 && (
-            <div className="later">
-              <p className="muted small">Saved for later</p>
-              {later.map((c) => (
-                <button key={c.key} className="link" onClick={() => { setLater((l) => l.filter((x) => x.key !== c.key)); setCards((cs) => [c, ...cs]); }}>
-                  {c.decision.item?.payload.stem.slice(0, 60) || c.decision.action} · {fmt(c.t)}
+          </div>
+        </main>
+      ) : (
+        <main className="learn">
+          <section className="stage" aria-label="Video">
+            <div className="stage-inner">
+              {pack ? (
+                pack.video.playback.kind === "youtube_embed" ? (
+                  <YouTubePlayer ref={player} videoId={pack.video.playback.video_id} onError={setPlayerError} />
+                ) : (
+                  <FilePlayer ref={player} src={mediaUrl(pack.video.playback.path)} onError={setPlayerError} />
+                )
+              ) : (
+                <div className="player-frame" />
+              )}
+              {playerError && <p className="notice" role="alert" style={{ margin: "10px 0 0" }}>{playerError}</p>}
+
+              <DotRail
+                duration={D}
+                now={now}
+                chapters={pack?.chapters ?? []}
+                concepts={pack?.concepts ?? []}
+                marks={pack?.marks ?? []}
+                frames={pack?.frames ?? []}
+                onSeek={seek}
+              />
+
+              <div className="now-strip">
+                <div>
+                  {currentChapter ? (
+                    <>
+                      <span className="chapter-no">
+                        Chapter {chIndex + 1} of {pack!.chapters.length}, {fmt(currentChapter.t0)} to {fmt(currentChapter.t1)}
+                      </span>
+                      <h2>{currentChapter.title}</h2>
+                      {currentChapter.summary && <p>{currentChapter.summary}</p>}
+                    </>
+                  ) : (
+                    <>
+                      <span className="chapter-no">{fmt(now)}</span>
+                      <h2>{failed ? "This video couldn't be read" : "Finding the chapters"}</h2>
+                      <p>
+                        {failed
+                          ? pack?.video.status_detail || "Try another video."
+                          : "You can start watching now. Questions appear chapter by chapter, starting where you are."}
+                      </p>
+                    </>
+                  )}
+                </div>
+                <div className="marks" role="group" aria-label="Mark this moment">
+                  {MARKS.map((m) => (
+                    <button
+                      key={m.type}
+                      className={`btn mark-btn${flash === m.type ? " flash" : ""}`}
+                      onClick={() => void addMark(m.type)}
+                      title={`Mark this moment as ${m.label.toLowerCase()} (${m.key})`}
+                    >
+                      <i style={{ background: m.color }} aria-hidden="true" />
+                      {m.label}
+                      <kbd aria-hidden="true">{m.key}</kbd>
+                    </button>
+                  ))}
+                  <button className="btn btn-primary" onClick={quizMe} disabled={!pack?.items.length} title="Quiz me on this chapter (q)">
+                    Quiz me
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <aside className="panel" aria-label="Study panel">
+            <div className="cards">
+              {cards.map((c) => (
+                <InterventionCard
+                  key={c.key}
+                  card={c}
+                  onSeek={seek}
+                  onAsk={askCoach}
+                  onPlay={() => player.current?.play()}
+                  onClose={(engaged) => {
+                    if (engaged) policyRef.current?.engaged(c.action);
+                    else policyRef.current?.dismissed(c.action);
+                    setCards((cs) => cs.filter((x) => x.key !== c.key));
+                    if (c.item) void loadPack();
+                  }}
+                />
+              ))}
+            </div>
+            <div className="tabs" role="tablist" aria-label="Study panel">
+              {(
+                [
+                  ["transcript", "Transcript", pack?.sentences.length],
+                  ["coach", "Coach", null],
+                  ["concepts", "Concepts", pack?.concepts.length],
+                ] as const
+              ).map(([id, label, count]) => (
+                <button
+                  key={id}
+                  role="tab"
+                  id={`tab-${id}`}
+                  aria-controls={`panel-${id}`}
+                  aria-selected={tab === id}
+                  className="tab"
+                  onClick={() => setTab(id)}
+                >
+                  {label}
+                  {count ? <span className="count">{count}</span> : null}
                 </button>
               ))}
             </div>
-          )}
-        </div>
-        <div className="tab-body" hidden={tab !== "coach"}>
-          <Coach mediaId={mediaId} sentences={pack.sentences} now={() => player.current?.time() ?? now}
-            onSeek={seek} pending={pendingQ} onPendingHandled={() => setPendingQ(null)} />
-        </div>
-      </aside>
-
-      {toast && <div className="toast">{toast}</div>}
-    </div>
+            <div className="tabpanel" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+              {tab === "transcript" && (
+                <Transcript
+                  sentences={pack?.sentences ?? []}
+                  chapters={pack?.chapters ?? []}
+                  now={now}
+                  onSeek={seek}
+                  onFixed={(id, text) =>
+                    setPack((p) => (p ? { ...p, sentences: p.sentences.map((s) => (s.id === id ? { ...s, text, confidence: 1, needs_review: false } : s)) } : p))
+                  }
+                />
+              )}
+              {tab === "coach" && (
+                <Coach ref={coach} mediaId={mediaId} now={() => player.current?.time() ?? now} onSeek={seek} nowLabel={fmt(now)} />
+              )}
+              {tab === "concepts" && (
+                <ul className="concepts">
+                  {!pack?.concepts.length && (
+                    <li className="coach-empty" style={{ border: 0 }}>
+                      Concepts show up here as each chapter is prepared.
+                    </li>
+                  )}
+                  {pack?.concepts.map((c) => (
+                    <li key={c.id}>
+                      <h4>{c.name}</h4>
+                      <div className="times">
+                        {c.occurrences.map((o) => (
+                          <button key={o.chapter_id} className="time-chip" onClick={() => seek(o.t0)}>
+                            {fmt(o.t0)}
+                          </button>
+                        ))}
+                      </div>
+                      {c.elsewhere.length > 0 && (
+                        <div className="also">
+                          Also in{" "}
+                          {c.elsewhere.slice(0, 2).map((e, i) => (
+                            <span key={e.media_id}>
+                              {i > 0 && " and "}
+                              <Link href={`/learn/${e.media_id}?t=${Math.floor(e.t0)}`}>{e.title}</Link>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </aside>
+        </main>
+      )}
+    </>
   );
 }

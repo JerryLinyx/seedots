@@ -1,121 +1,149 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { askCoach, fmt } from "@/lib/api";
-import type { Citation, Sentence } from "@/lib/types";
+import { type FormEvent, type ReactNode, forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { api, fmt } from "@/lib/api";
+import type { Citation, CoachMessage } from "@/lib/types";
 
-type Msg = { role: "user" | "assistant"; text: string; t: number; citations?: Citation[]; error?: boolean };
+export type CoachHandle = { ask: (question: string) => void };
 
-/** Render "[s0042]" citations as clickable timestamps. */
-function Rendered({ text, refs, onSeek }: { text: string; refs: Map<string, number>; onSeek: (t: number) => void }) {
-  const parts = text.split(/(\[s\d{4}\])/g);
-  return (
-    <>
-      {parts.map((part, i) => {
-        const m = /^\[(s\d{4})\]$/.exec(part);
-        if (!m) return <span key={i}>{part}</span>;
-        const t = refs.get(m[1]);
-        return t === undefined ? null : (
-          <button key={i} className="chip inline" onClick={() => onSeek(t)}>
-            ▶ {fmt(t)}
+const CITE = /\[(s\d{4}|o\d{1,2})\]|\(not from the video\)/g;
+
+function render(text: string, cites: Citation[], onSeek: (t: number, mediaId?: string) => void): ReactNode[] {
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(CITE)) {
+    out.push(text.slice(last, m.index));
+    if (m[1]) {
+      const c = cites.find((x) => x.ref === m[1]);
+      out.push(
+        c && c.t0 != null ? (
+          <button key={m.index} className="time-chip" onClick={() => onSeek(c.t0!, c.media_id)}>
+            {fmt(c.t0)}
+            {c.ref.startsWith("o") ? " in another video" : ""}
           </button>
-        );
-      })}
-    </>
-  );
+        ) : null,
+      );
+    } else {
+      out.push(
+        <span key={m.index} className="ext">
+          (not from the video)
+        </span>,
+      );
+    }
+    last = (m.index ?? 0) + m[0].length;
+  }
+  out.push(text.slice(last));
+  return out;
 }
 
-export function Coach({
-  mediaId,
-  sentences,
-  now,
-  onSeek,
-  pending,
-  onPendingHandled,
-}: {
-  mediaId: string;
-  sentences: Sentence[];
-  now: () => number;
-  onSeek: (t: number) => void;
-  pending: string | null;
-  onPendingHandled: () => void;
-}) {
-  const [msgs, setMsgs] = useState<Msg[]>([]);
-  const [input, setInput] = useState("");
+export const Coach = forwardRef<
+  CoachHandle,
+  { mediaId: string; now: () => number; onSeek: (t: number, mediaId?: string) => void; nowLabel: string }
+>(function Coach({ mediaId, now, onSeek, nowLabel }, ref) {
+  const [log, setLog] = useState<CoachMessage[]>([]);
+  const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
-  const end = useRef<HTMLDivElement>(null);
-  const refs = new Map(sentences.map((s) => [s.id.split(".").pop() as string, s.t0]));
+  const logRef = useRef<HTMLDivElement>(null);
 
-  const ask = async (question: string) => {
+  useEffect(() => {
+    void api.thread(mediaId).then(setLog).catch(() => undefined);
+  }, [mediaId]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [log]);
+
+  async function ask(question: string) {
     if (busy) return;
-    const t = now();
+    const q = question.trim() || "I'm confused about this part. Can you explain it?";
     setBusy(true);
-    setMsgs((m) => [...m, { role: "user", text: question || "Explain this moment.", t }, { role: "assistant", text: "", t }]);
+    setDraft("");
+    setLog((l) => [...l, { role: "user", content: q, citations: [] }, { role: "assistant", content: "", citations: [] }]);
     try {
-      const citations = await askCoach({ media_id: mediaId, t, question }, (delta) =>
-        setMsgs((m) => {
-          const copy = [...m];
-          const last = copy[copy.length - 1];
-          copy[copy.length - 1] = { ...last, text: last.text + delta };
-          return copy;
-        }),
-      );
-      setMsgs((m) => {
-        const copy = [...m];
-        copy[copy.length - 1] = { ...copy[copy.length - 1], citations };
-        return copy;
-      });
+      for await (const { event, data } of await api.coach(mediaId, now(), q)) {
+        if (event === "delta") {
+          setLog((l) => {
+            const copy = [...l];
+            const last = copy[copy.length - 1];
+            copy[copy.length - 1] = { ...last, content: last.content + data.text };
+            return copy;
+          });
+        } else if (event === "done") {
+          setLog((l) => {
+            const copy = [...l];
+            copy[copy.length - 1] = { ...copy[copy.length - 1], citations: data.citations };
+            return copy;
+          });
+        } else if (event === "error") {
+          throw new Error(data.message);
+        }
+      }
     } catch (e) {
-      setMsgs((m) => {
-        const copy = [...m];
-        copy[copy.length - 1] = { role: "assistant", text: (e as Error).message, t, error: true };
+      setLog((l) => {
+        const copy = [...l];
+        copy[copy.length - 1] = {
+          role: "assistant",
+          content: e instanceof Error && e.message ? e.message : "The coach is unavailable right now.",
+          citations: [],
+        };
         return copy;
       });
     } finally {
       setBusy(false);
     }
-  };
+  }
 
-  useEffect(() => {
-    if (pending !== null && !busy) {
-      onPendingHandled();
-      void ask(pending);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending]);
+  useImperativeHandle(ref, () => ({ ask: (q) => void ask(q) }));
 
-  useEffect(() => end.current?.scrollIntoView({ block: "end" }), [msgs]);
+  function submit(e: FormEvent) {
+    e.preventDefault();
+    void ask(draft);
+  }
 
   return (
     <div className="coach">
-      <div className="coach-msgs">
-        {msgs.length === 0 && (
-          <p className="muted">
-            Ask about what you are watching. The coach sees the transcript around the current moment and cites it.
+      <div className="coach-log" ref={logRef} aria-live="polite">
+        {!log.length && (
+          <p className="coach-empty">
+            Ask about what you're watching. The coach reads the transcript around {nowLabel}, answers briefly, and
+            points to the exact moments it relies on.
           </p>
         )}
-        {msgs.map((m, i) => (
-          <div key={i} className={`msg ${m.role}${m.error ? " error" : ""}`}>
-            {m.role === "user" && <span className="muted small">at {fmt(m.t)}</span>}
-            <div>{m.role === "assistant" ? <Rendered text={m.text || "…"} refs={refs} onSeek={onSeek} /> : m.text}</div>
-          </div>
-        ))}
-        <div ref={end} />
+        {log.map((m, i) =>
+          m.role === "user" ? (
+            <div key={i} className="msg-user">
+              {m.content}
+            </div>
+          ) : (
+            <div key={i} className="msg-bot">
+              {render(m.content, m.citations, onSeek)}
+              {busy && i === log.length - 1 && <span className="caret" aria-label="Writing" />}
+            </div>
+          ),
+        )}
       </div>
-      <form
-        className="coach-input"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const q = input.trim();
-          setInput("");
-          void ask(q);
-        }}
-      >
-        <input value={input} onChange={(e) => setInput(e.target.value)} placeholder="Ask about this moment…" />
-        <button className="primary" disabled={busy}>
+      <form className="coach-form" onSubmit={submit}>
+        <label htmlFor="coach-q" className="sr-only">
+          Ask the coach
+        </label>
+        <textarea
+          id="coach-q"
+          className="field"
+          rows={1}
+          placeholder="Why does this step work?"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void ask(draft);
+            }
+          }}
+        />
+        <button className="btn btn-primary" type="submit" disabled={busy}>
           Ask
         </button>
       </form>
     </div>
   );
-}
+});
