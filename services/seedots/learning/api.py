@@ -507,7 +507,7 @@ def create_app(container: LearningContainer | None = None) -> FastAPI:
         with db.session() as s:
             ensure_user(s, user)
             _404(visible_video, s, body.media_id, user)
-            t = max(0.0, body.t - 3)                 # people react a beat after the moment
+            t = max(0.0, body.t - 5)                 # PRD R15: people react a beat after the moment
             under = s.scalar(sa.select(EvidenceSnapshot.id).where(
                 EvidenceSnapshot.media_id == body.media_id, EvidenceSnapshot.kind == "sentence",
                 EvidenceSnapshot.is_current.is_(True), EvidenceSnapshot.t0 <= t, EvidenceSnapshot.t1 > t))

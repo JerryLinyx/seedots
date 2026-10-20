@@ -197,6 +197,29 @@ class EndToEnd(unittest.TestCase):
         tasks = {u["task"] for u in self.api.get("/api/usage").json()}
         self.assertTrue({"concepts", "items", "select_action", "coach", "card"} <= tasks, tasks)
 
+    def test_marks_and_events(self):
+        U = {"X-SeeDots-User": "u3"}
+        mid = self.upload("u3", "marks", 120, long_vtt(20))["media_id"]
+
+        # R15: a mark lands 5 seconds before the press, anchored to the sentence under it
+        m = self.api.post("/api/marks", headers=U, json={"media_id": mid, "t": 30, "type": "confused",
+                                                          "note": "why minus?"}).json()
+        self.assertEqual(m["t"], 25)
+        self.assertEqual(self.api.post("/api/marks", headers=U, json={"media_id": mid, "t": 2,
+                                                                       "type": "useful"}).json()["t"], 0)
+        self.assertEqual(self.api.post("/api/marks", headers=U, json={"media_id": mid, "t": 1,
+                                                                       "type": "bogus"}).status_code, 422)
+        # someone else cannot delete it
+        self.assertEqual(self.api.delete(f"/api/marks/{m['id']}", headers={"X-SeeDots-User": "u4"}).status_code, 404)
+        self.assertEqual(self.api.delete(f"/api/marks/{m['id']}", headers=U).status_code, 200)
+
+        # R08: behaviour events are idempotent by event_id
+        evs = [{"event_id": f"e{i}", "type": "seek", "media_id": mid, "media_time": 10 + i,
+                "client_seq": i, "payload": {"from": 40, "to": 10 + i}} for i in range(3)]
+        self.assertEqual(self.api.post("/api/events", headers=U, json={"events": evs}).json()["accepted"], 3)
+        self.assertEqual(self.api.post("/api/events", headers=U, json={"events": evs + evs[:1]}).json()["accepted"], 0)
+        self.assertEqual(self.api.post("/api/events", headers=U, json={"events": [{"type": "seek"}]}).status_code, 422)
+
     def test_concept_merge_and_rollback(self):
         from seedots.learning.concepts import Mention
 

@@ -10,6 +10,8 @@
 - "实现状态" only claims what exists in the repo and is covered by tests. Untested paths say "未验证".
 
 ## Other docs
+- `docs/prd.md`: product requirements (what to build), R01–R27 / S1–S10. Same editing rules as the plan; keep
+  its §5 status column and the plan's §11 traceability table in sync when a requirement's status changes.
 - `docs/database.md`: schema design and migration history. New migration => add a line there.
 - `README.md`: structure, setup, deviations from the plan.
 

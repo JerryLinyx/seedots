@@ -2,7 +2,7 @@
 
 See the dots. Connect them. 给正在看的教学视频加一层 AI：在恰当的时刻出现可验证的学习动作，答案指回视频里的具体时刻，并把不同视频里的知识连起来。
 
-按 [技术方案](docs/tech-plan.md) 实现：通用视频分析底座 → 学习内容生成 → 学习运行时 → AI Coach → 知识地图。
+按 [需求文档](docs/prd.md) 和 [技术方案](docs/tech-plan.md) 实现：通用视频分析底座 → 学习内容生成 → 学习运行时 → AI Coach → 知识地图。
 
 ## 结构
 
@@ -36,7 +36,8 @@ services/
   scenekit/                  本机无头 Chromium 沙箱（Node + playwright-core）
   grabber/                   网页视频抓取（来自 Kiwi/mediagrab，Node）
   migrations/                Alembic，每个服务一套
-docs/tech-plan.md            技术方案（以此为准，和代码一起维护）
+docs/prd.md                  需求文档（做什么，R01–R27）
+docs/tech-plan.md            技术方案（怎么做，含需求追溯；和代码一起维护）
 docs/database.md             数据库设计
 ```
 
@@ -78,7 +79,7 @@ cd services && .venv/bin/python -m pytest
 
 | 方案 | 现在 | 下一步 |
 | --- | --- | --- |
-| YouTube：模型直读链接 + 第二遍画面证据 | 只读平台字幕轨；关键帧只对自有文件生成 | 接视觉模型后增加区域证据处理器 |
+| YouTube：模型直读链接 + 第二遍画面证据 | 用 yt-dlp（不下载视频）只读元数据和平台字幕轨；关键帧只对自有文件生成 | 换成 Data API + oEmbed + 模型读链接（PRD §11 决议，见方案 §10）；接视觉模型后增加区域证据处理器 |
 | L2 托管代码沙箱 | 本机无头 Chromium（同一 JSON 协议） | 换成托管沙箱，只需实现 `Sandbox.run` |
 | 托管认证 | 请求头 `X-SeeDots-User`（默认 `demo`） | 接认证服务，`current_user` 一处替换 |
 | pgvector | 向量存 JSON，召回在应用里算 | 见 `docs/database.md` |
