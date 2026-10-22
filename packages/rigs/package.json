@@ -1,0 +1,8 @@
+{
+  "name": "@seedots/rigs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SeeDots lab rigs: scene specs, gates, the 12 rigs and their plotting primitives. Runs unchanged in the browser and in Node (type stripping).",
+  "exports": { ".": "./src/index.ts", "./*": "./src/*" }
+}
