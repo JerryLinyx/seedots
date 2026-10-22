@@ -23,7 +23,8 @@ from seedots.learning.pipeline import ConceptsOut, ContentRunner, ItemsOut
 from seedots.learning.pipeline import WORKFLOW as CHAPTER_WORKFLOW
 from seedots.learning.runtime import LLMSelector, Runtime, SelectOut
 from seedots.learning.scenes.sandbox import NodeSandbox
-from seedots.learning.scenes.service import WORKFLOW as SCENE_WORKFLOW, CodeOut, ReviewOut, SceneService, SpecOut
+from seedots.learning.scenes.rigs import RigClient
+from seedots.learning.scenes.service import WORKFLOW as SCENE_WORKFLOW, BuildOut, LabSpecOut, ReviewOut, SceneService, SpecOut
 
 PROMPTS = Path(__file__).parent / "prompts"
 # max_tokens caps thinking + answer for reasoning models, so it is generous; the gateway retries
@@ -37,8 +38,10 @@ TASKS = [
     TaskSpec("coach", None, temperature=0.4, max_tokens=6000, timeout=90, reasoning="low"),
     TaskSpec("card", CardOut, temperature=0.3, max_tokens=6000, reasoning="low"),
     TaskSpec("scene_spec", SpecOut, temperature=0.2, max_tokens=12000, timeout=180, cache=True),
-    TaskSpec("scene_code", CodeOut, temperature=0.3, max_tokens=32000, timeout=420, output_retries=2,
-             output_mode="tool"),
+    TaskSpec("lab_spec", LabSpecOut, temperature=0.2, max_tokens=16000, timeout=300),
+    # prompted output: this model often answers in text instead of calling an output tool (all retries then
+    # fail); a JSON answer in text is what lab_spec uses too. A draft that passed its checks is kept anyway.
+    TaskSpec("scene_code", BuildOut, temperature=0.3, max_tokens=32000, timeout=420, output_retries=2),
     TaskSpec("scene_review", ReviewOut, temperature=0.0, max_tokens=4000, timeout=90, reasoning="low"),
 ]
 
@@ -61,7 +64,8 @@ class LearningContainer:
 
 
 def build_container(settings: Settings | None = None, *, media_http: httpx.Client | None = None,
-                    inline: bool = False, migrate: bool | None = None, **_: Any) -> LearningContainer:
+                    rigs_http: httpx.Client | None = None, inline: bool = False, migrate: bool | None = None,
+                    **_: Any) -> LearningContainer:
     settings = settings or load_settings()
     if settings.auto_migrate if migrate is None else migrate:
         upgrade("learning", settings.learning_db_url)
@@ -72,8 +76,9 @@ def build_container(settings: Settings | None = None, *, media_http: httpx.Clien
     embedder = build_embedder(settings.embeddings)
     library = ConceptLibrary(db, gateway, embedder)
     sandbox = NodeSandbox() if settings.sandbox == "local" else None
+    rigs = RigClient(rigs_http) if rigs_http is not None else RigClient.at(settings.rigs_url)
     scenes = SceneService(db, gateway, sandbox, vision=settings.llm_fake or settings.vlm.configured,
-                          data_dir=settings.data_dir)
+                          data_dir=settings.data_dir, rigs=rigs)
     runner = ContentRunner(db, media, gateway, library, scenes)
     workflows = Router({CHAPTER_WORKFLOW: runner, SCENE_WORKFLOW: scenes})
     engine = build_engine(settings.workflow_engine, workflows, service="learning",
@@ -83,5 +88,5 @@ def build_container(settings: Settings | None = None, *, media_http: httpx.Clien
         settings=settings, db=db, gateway=gateway, media=media, runner=runner, engine=engine,
         inbox=Inbox(db, media, runner.chapter_ready),
         runtime=Runtime(db, LLMSelector(gateway), use_llm=settings.action_selector == "llm"),
-        coach=Coach(db, gateway), knowledge=Knowledge(db, gateway, embedder), library=library,
+        coach=Coach(db, gateway, rigs), knowledge=Knowledge(db, gateway, embedder), library=library,
         scenes=scenes, workflows=workflows)

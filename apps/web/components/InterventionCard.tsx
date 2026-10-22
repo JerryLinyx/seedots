@@ -13,6 +13,7 @@ const KIND: Record<string, string> = {
   rewatch: "Worth another look",
   explain: "Let's untangle this",
   link: "You've met this before",
+  lab: "Try it in the lab",
 };
 
 type Props = {
@@ -21,9 +22,10 @@ type Props = {
   onSeek: (t: number) => void;
   onAsk: (question: string) => void;
   onPlay: () => void;
+  onOpenLab?: (id: string) => void;
 };
 
-export function InterventionCard({ card, onClose, onSeek, onAsk, onPlay }: Props) {
+export function InterventionCard({ card, onClose, onSeek, onAsk, onPlay, onOpenLab }: Props) {
   const [leaving, setLeaving] = useState(false);
   const [answered, setAnswered] = useState(false);
 
@@ -113,6 +115,20 @@ export function InterventionCard({ card, onClose, onSeek, onAsk, onPlay }: Props
             </button>
             <button className="btn btn-quiet" onClick={() => { void api.resolveLink(card.link!.id, "dismissed"); close(false); }}>
               Not related
+            </button>
+          </div>
+        </>
+      )}
+
+      {card.action === "lab" && card.lab && (
+        <>
+          <h3>“{card.lab.title}”: predict what happens, then try it.</h3>
+          <div className="icard-actions">
+            <button className="btn btn-primary" onClick={() => { onOpenLab?.(card.lab!.id); close(true); }}>
+              Open the lab
+            </button>
+            <button className="btn btn-quiet" onClick={() => close(false)}>
+              Later
             </button>
           </div>
         </>

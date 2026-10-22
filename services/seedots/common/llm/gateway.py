@@ -217,10 +217,12 @@ class Gateway:
     # ----------------------------------------------------------------- structured, sync
     def run(self, task: str, variables: dict[str, Any], *, manifest: dict[str, Any] | None = None,
             use_cache: bool | None = None, tools: Sequence[Callable[..., Any]] = (),
-            images: Sequence[bytes] = (), max_requests: int | None = None) -> Any:
+            images: Sequence[bytes] = (), max_requests: int | None = None,
+            on_event: Callable[[dict[str, Any]], None] | None = None) -> Any:
         """Structured call. `tools` turns it into a bounded agent loop (the model may call the
         whitelisted functions, at most `max_requests` model requests); `images` are PNGs sent
-        with the user message (vision tasks)."""
+        with the user message (vision tasks). `on_event` sees the run as it happens (thinking,
+        text, tool-argument and tool call/result events, see _relay) without changing the result."""
         spec = self.spec(task)
         if spec.output is None:
             raise LLMError(f"task {task!r} is a text task; use stream()")
@@ -245,7 +247,8 @@ class Gateway:
                 result = self._agent(spec, prompt).run_sync(
                     user_prompt, instructions=system, model_settings=settings,
                     toolsets=[FunctionToolset(list(tools))] if tools else None,
-                    usage_limits=UsageLimits(request_limit=max_requests) if max_requests else None)
+                    usage_limits=UsageLimits(request_limit=max_requests) if max_requests else None,
+                    event_stream_handler=_relay(on_event) if on_event else None)
                 break
             except Exception as exc:
                 if (retry := self._recover(exc, settings, tried)) is not None:
@@ -323,3 +326,46 @@ class Gateway:
         finally:
             rec.latency_ms = int((time.perf_counter() - started) * 1000)
             self._record(rec)
+
+
+def _relay(on_event: Callable[[dict[str, Any]], None]):
+    """An event_stream_handler that turns Pydantic AI events into small dicts:
+    {"kind": "thinking", "chars"} | {"kind": "text", "delta"} | {"kind": "tool_args", "tool", "chars"} |
+    {"kind": "tool_call", "tool", "args"} | {"kind": "tool_result", "tool", "content"}.
+    A failing listener never breaks the run."""
+    from pydantic_ai.messages import (FunctionToolResultEvent, PartDeltaEvent as _Delta, PartStartEvent as _Start,
+                                      TextPartDelta as _Text, ThinkingPartDelta, ToolCallPart, ToolCallPartDelta)
+
+    def emit(ev: dict[str, Any]) -> None:
+        try:
+            on_event(ev)
+        except Exception:
+            log.exception("on_event listener failed")
+
+    async def handler(ctx, events) -> None:
+        tools: dict[int, str] = {}
+        async for ev in events:
+            if isinstance(ev, _Start) and isinstance(ev.part, ToolCallPart):
+                tools[ev.index] = ev.part.tool_name
+            elif isinstance(ev, _Delta):
+                d = ev.delta
+                if isinstance(d, ThinkingPartDelta) and d.content_delta:
+                    emit({"kind": "thinking", "chars": len(d.content_delta)})
+                elif isinstance(d, _Text) and d.content_delta:
+                    emit({"kind": "text", "delta": d.content_delta})
+                elif isinstance(d, ToolCallPartDelta):
+                    if d.tool_name_delta:
+                        tools[ev.index] = tools.get(ev.index, "") + d.tool_name_delta
+                    if isinstance(d.args_delta, str) and d.args_delta:
+                        emit({"kind": "tool_args", "tool": tools.get(ev.index, ""), "chars": len(d.args_delta)})
+            elif isinstance(ev, FunctionToolCallEvent):
+                try:
+                    args = ev.part.args_as_dict()
+                except Exception:
+                    args = {}
+                emit({"kind": "tool_call", "tool": ev.part.tool_name, "args": args})
+            elif isinstance(ev, FunctionToolResultEvent):
+                part = getattr(ev, "part", None) or getattr(ev, "result", None)   # renamed across versions
+                emit({"kind": "tool_result", "tool": getattr(part, "tool_name", ""), "content": getattr(part, "content", None)})
+
+    return handler

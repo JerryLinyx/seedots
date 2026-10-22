@@ -17,6 +17,8 @@
 - `docs/progress.md`: tasks (T01…), milestones, weekly log. Update a task's status when you start or finish it,
   with the commit hash.
 - `docs/database.md`: schema design and migration history. New migration => add a line there.
+- `docs/decisions/`: one decision record per area (why, rejected options, status, what is left); `docs/research/`:
+  external research. Fold process notes into these instead of adding dated drafts; the plan stays the source of truth.
 - `README.md` (English) and `README.zh-CN.md` (Chinese): features, setup, configuration, structure,
   deviations from the plan. Keep the two in sync: a change to one goes into the other in the same commit.
 

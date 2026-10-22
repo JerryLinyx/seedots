@@ -23,9 +23,9 @@ from seedots.learning import item_types, items
 from seedots.learning.catalog import add_to_library, current_sentences, ensure_user, visible_video
 from seedots.learning.models import (Action, Attempt, Chapter, ConceptLink, Decision, DecisionOutcome, EvidenceRole,
                                      LearningItem, LibraryEntry, LinkRelation, Mastery, Occurrence, ReviewStatus,
-                                     UserSettings, Video)
+                                     SceneSpec, SceneStatus, UserSettings, Video)
 
-ActionName = Literal["none", "check_in", "quiz", "predict", "rewatch", "explain", "link"]
+ActionName = Literal["none", "check_in", "quiz", "predict", "rewatch", "explain", "link", "lab"]
 SignalName = Literal["rewind_repeat", "long_pause", "chapter_end", "skip_ahead", "confused_mark", "predict_window",
                      "concept_seen_before", "manual"]
 
@@ -33,7 +33,7 @@ SignalName = Literal["rewind_repeat", "long_pause", "chapter_end", "skip_ahead",
 # Which actions make sense for each signal; the model only ever chooses among these.
 # Explicit learner requests (EXPLICIT) are not second-guessed by the model: the rules answer them.
 ALLOWED: dict[str, list[str]] = {
-    "chapter_end": ["none", "quiz", "check_in", "rewatch", "explain"],
+    "chapter_end": ["none", "quiz", "lab", "check_in", "rewatch", "explain"],
     "skip_ahead": ["none", "quiz", "check_in", "rewatch"],
     "manual": ["none", "quiz"],          # the learner pressed "Quiz me": a question, or none if none is left
     "rewind_repeat": ["none", "check_in", "rewatch", "explain", "quiz"],
@@ -65,6 +65,7 @@ class Context:
     predict_items: list[LearningItem]
     rewatch: dict | None
     link: dict | None
+    lab: dict | None                     # a ready lab for this chapter: {id, title, engine}
     mastery: dict[str, Mastery]
     purpose: str
     recent: list[Decision]
@@ -112,6 +113,8 @@ class RuleSelector:
             if quiz:
                 return Choice("quiz", quiz.id, "check the part just skipped" if k == "skip_ahead"
                               else "check the chapter just covered")
+            if k == "chapter_end" and ctx.lab:
+                return Choice("lab", None, "this chapter has a lab to try what it taught")
             return Choice("none", None, "no usable item for this chapter yet")
         if k == "rewind_repeat":
             if ctx.rewatch:
@@ -147,6 +150,7 @@ class LLMSelector:
             "mastery": {cid: m.level for cid, m in ctx.mastery.items()},
             "context": "\n".join(f"[{fmt_ts(x.t0)}] {x.content.get('text', '')}" for x in sents) or "(no transcript)",
             "candidates": ctx.candidates, "items": items_txt,
+            "lab": {"title": ctx.lab["title"]} if ctx.lab else "none",
         }, use_cache=False, manifest={"signal": ctx.signal.kind, "candidates": ctx.candidates})
         if out.action not in ctx.candidates:
             raise LLMError(f"model chose {out.action!r}, not a candidate")
@@ -192,9 +196,11 @@ class Runtime:
         ctx = Context(user_id, media_id, signal, chapter, quiz, predict,
                       self._rewatch_target(s, user_id, media_id, concept_ids),
                       self._link_target(s, user_id, media_id, signal.concept_id),
+                      self._lab_target(s, chapter),
                       mastery, settings.purpose.value if settings else "interest", recent)
         available = {"none", "check_in", "explain"} | ({"quiz"} if quiz else set()) | \
-            ({"predict"} if predict else set()) | ({"rewatch"} if ctx.rewatch else set()) | ({"link"} if ctx.link else set())
+            ({"predict"} if predict else set()) | ({"rewatch"} if ctx.rewatch else set()) | \
+            ({"link"} if ctx.link else set()) | ({"lab"} if ctx.lab else set())
         ctx.candidates = [a for a in ALLOWED[signal.kind] if a in available]
         return ctx
 
@@ -212,6 +218,17 @@ class Runtime:
                     first = min(spans, key=lambda u: u.t0)
                     return {"evidence_id": first.id, "t0": first.t0, "t1": max(u.t1 for u in spans), "item_id": item.id}
         return None
+
+    @staticmethod
+    def _lab_target(s: Session, chapter: Chapter | None) -> dict | None:
+        """A ready lab for this chapter (looked up only: nothing is generated online)."""
+        if chapter is None:
+            return None
+        row = s.scalar(sa.select(SceneSpec).where(SceneSpec.chapter_id == chapter.id, SceneSpec.status == SceneStatus.READY)
+                       .order_by(SceneSpec.created_at))
+        if row is None:
+            return None
+        return {"id": row.id, "title": row.title, "engine": "rig" if (row.spec or {}).get("version") == 2 else row.level.value}
 
     @staticmethod
     def _link_target(s: Session, user_id: str, media_id: str, concept_id: str | None) -> dict | None:
@@ -264,6 +281,8 @@ class Runtime:
                 out["item"] = items.project(s, [s.get(LearningItem, choice.item_id)])[0]
             if choice.action == "rewatch":
                 out["rewatch"] = ctx.rewatch
+            if choice.action == "lab" and ctx.lab:
+                out["lab"] = ctx.lab
             if choice.action == "link" and ctx.link:
                 link = ConceptLink(id=new_id("lnk"), user_id=user_id, concept_id=ctx.link["concept_id"],
                                    relation=LinkRelation.SAME_CONCEPT, from_media_id=media_id,

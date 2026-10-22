@@ -26,15 +26,26 @@ function linkify(text: string, keepCites: boolean): string {
 }
 
 /** Model text (Markdown + LaTeX) with evidence citations shown as clickable moments. Raw HTML is not rendered. */
+/** "#lab-scn_x?tau=2&s=1" → the lab id and the settings to open it at. */
+export function parseLabLink(href: string): { id: string; set: Record<string, number> } | null {
+  const m = href.match(/^#lab-([A-Za-z0-9_-]+)(?:\?(.*))?$/);
+  if (!m) return null;
+  const set: Record<string, number> = {};
+  for (const [k, v] of new URLSearchParams(m[2] ?? "")) if (Number.isFinite(Number(v))) set[k] = Number(v);
+  return { id: m[1], set };
+}
+
 export function Markdown({
   text,
   citations = [],
   onSeek,
+  onOpenLab,
   className,
 }: {
   text: string;
   citations?: Citation[];
   onSeek?: (t: number, mediaId?: string) => void;
+  onOpenLab?: (id: string, set: Record<string, number>) => void;
   className?: string;
 }) {
   const components: Components = {
@@ -50,6 +61,16 @@ export function Markdown({
         );
       }
       if (href === "#ext") return <span className="ext">{children}</span>;
+      const lab = href ? parseLabLink(href) : null;
+      if (lab) {
+        // a lab result the coach computed: open the lab at the same settings
+        if (!onOpenLab) return <span>{children}</span>;
+        return (
+          <button type="button" className="lab-chip" onClick={() => onOpenLab(lab.id, lab.set)}>
+            {children}
+          </button>
+        );
+      }
       return (
         <a href={href} target="_blank" rel="noreferrer noopener">
           {children}

@@ -71,7 +71,7 @@
 | 接口 | 用途 | 请求 | 响应要点 |
 | --- | --- | --- | --- |
 | `POST /api/events` | 批量上报行为事件（只追加，按 `event_id` 去重），一次最多 500 条 | `events[]`：`event_id`、`type` 必填；`session_id`、`media_id`、`media_time`、`client_seq`、`occurred_at`（毫秒）、`payload` 可选 | `accepted`（新写入条数） |
-| `POST /api/decide` | 信号 → 教学动作 | `media_id`、`signal`（见下） | `decision_id`、`action`、`reason`、`selector`、`rule_action`、`latency_ms`、`fallback`；按动作附带 `item` / `rewatch` / `link` |
+| `POST /api/decide` | 信号 → 教学动作 | `media_id`、`signal`（见下） | `decision_id`、`action`、`reason`、`selector`、`rule_action`、`latency_ms`、`fallback`；按动作附带 `item` / `rewatch` / `link` / `lab` |
 | `POST /api/decisions/{decision_id}/outcome` | 回报卡片结局 | `outcome`：`shown` / `dismissed` / `suppressed` | `ok` |
 | `POST /api/attempts` | 提交作答，服务端评分并更新掌握度 | `item_id`、`response`、`assisted`（用过提示）、`confidence?`（1–5）、`decision_id?` | `correct`、`answer`、`evidence[]`（`id`、`t0`、`t1`、`text`）、`counted_toward_mastery`、`why_not_counted`、`mastery`（按概念：`level`、`streak`、`independent_correct`） |
 | `POST /api/marks` | 加标记；时间点自动往前补 5 秒，挂到当时那一句 | `media_id`、`t`、`type`（`useful` / `resonate` / `confused`）、`note`（≤ 500 字） | 201，`id`、`t`（补过之后的时间）、`type`、`note` |
@@ -82,7 +82,7 @@
 
 | `kind` | 前端何时发出 | 允许的 `action` |
 | --- | --- | --- |
-| `chapter_end` | 播到章节末尾 | `none`、`quiz`、`check_in`、`rewatch`、`explain` |
+| `chapter_end` | 播到章节末尾 | `none`、`quiz`、`lab`、`check_in`、`rewatch`、`explain`（`lab` 只在本章有就绪的实验时可选） |
 | `skip_ahead` | 跳过一段 | `none`、`quiz`、`check_in`、`rewatch` |
 | `rewind_repeat` | 同一段回看两次 | `none`、`check_in`、`rewatch`、`explain`、`quiz` |
 | `long_pause` | 长暂停 | `none`、`check_in`、`explain`、`quiz` |
@@ -91,7 +91,7 @@
 | `confused_mark` | 点了“疑惑” | `explain` |
 | `manual` | 用户点“Quiz me” | `quiz`；本章没有未作答的题时 `none`。和 `confused_mark` 一样由规则直接回答，不调用模型 |
 
-动作附带的内容：`quiz` / `predict` → `item`（学习项）；`rewatch` → `rewatch`（`evidence_id`、`t0`、`t1`、`item_id`）；`link` → `link`（`id`、`concept_id`、`concept`、`occurrence_id`、`media_id`、`title`、时间）；`explain` 由前端打开 Coach。
+动作附带的内容：`quiz` / `predict` → `item`（学习项）；`rewatch` → `rewatch`（`evidence_id`、`t0`、`t1`、`item_id`）；`link` → `link`（`id`、`concept_id`、`concept`、`occurrence_id`、`media_id`、`title`、时间）；`lab` → `lab`（`id`、`title`、`engine`），前端打开本章实验；`explain` 由前端打开 Coach。
 
 **学习项**（下发形态）：`id`、`key`（跨版本稳定）、`version`、`type`、`schema_version`、`chapter_id`、`level`（1–3）、`concept_ids`、`concepts`、`evidence[]`（`id`、`revision`、`t0`、`t1`；不含揭晓句）、`review_status`、`show_before`（预测题必须在此时间之前出）、`payload`。
 
@@ -102,7 +102,7 @@
 | `ordering` | `stem`、`items[]`（已打乱）、`hints[]` | `{"order": [2, 0, 1]}`（`items` 的下标，按正确顺序） |
 | `matching` | `stem`、`left[]`、`right[]`、`hints[]` | `{"pairs": [1, 0, 2]}`（`pairs[i]` 是 `left[i]` 对应的 `right` 下标） |
 
-**前端行为事件 `type`**（目前上报的）：`play`、`pause`、`seek`、`rate`、`page_hidden`、`page_visible`、`card_shown`、`suppressed`、`scene.open`、`scene.predict`、`scene.set_param`、`scene.observe`、`scene.explain`、`scene.request`。新增类型不需要改后端，但请在这里补一行。
+**前端行为事件 `type`**（目前上报的）：`play`、`pause`、`seek`、`rate`、`page_hidden`、`page_visible`、`card_shown`、`suppressed`、`scene.open`、`scene.predict`、`scene.set_param`、`scene.observe`、`scene.explain`、`scene.request`、`scene.play`、`scene.open_request`（从 Coach 链接或卡片打开实验，`set` 为预设参数）。新增类型不需要改后端，但请在这里补一行。
 
 ### 2.4 AI Coach
 
@@ -122,9 +122,19 @@ Coach 的回答正文是 Markdown（公式为 `\(...\)` / `\[...\]`），引用�
 | `POST /api/scenes` | 请求生成一个 L2 交互场（异步） | `media_id`、`chapter_id`、`request`（学习者的描述，≤ 500 字） | 202，交互场对象（`status: queued`） |
 | `GET /api/scenes/{scene_id}` | 交互场状态与内容（前端轮询看进度） | — | 交互场对象 |
 | `GET /api/scenes/{scene_id}/runner` | L2 运行页 HTML。带 `Content-Security-Policy: sandbox allow-scripts`，前端放在 `<iframe sandbox="allow-scripts">` 里 | `?u=` | HTML |
+| `GET /api/scenes/{scene_id}/live` | 构建过程的实时事件（SSE），前端用 `EventSource` 订阅；只在构建进程内可用，否则只推送 `stage` 和 `done` | `?u=`、`after`（从第几个事件之后开始） | 事件 `stage`（阶段变化）、`thinking`（已思考秒数、字数）、`writing`（正在写规格或代码，已写字数）、`tool`（查实验台、读卡片、沙箱测试）、`draft_try`（试一份草稿：实验台、标题、滑块、预测题）、`tool_done`、`problem`（要改的问题）、`draft`（通过检查的草稿规格，可以先试）、`text`；最后是 `done`（交互场对象） |
 | `GET /api/scenes/{scene_id}/preview.png` | 闸门截图 | `?u=` | PNG |
 
-**交互场对象**：`id`、`level`（`L1` / `L2`）、`component`、`chapter_id`、`title`、`status`（`queued` / `generating` / `ready` / `failed`）、`request`、`error`、`progress`（`stage`、`log[]`）、`evidence[]`、`checks[]`（各道闸门结果，含“跳过”）、`spec`（仅 `ready` 时）。L1 的 `spec` 是组件配置（表达式、参数、预测题，不含答案）；L2 的 `spec` 是 `title`、`prompt`、`engine`、`params`、`predict`、`runner`、`preview`。
+**交互场对象**：`id`、`level`（`L1` / `L2`）、`component`、`engine`、`route`、`activity`、`chapter_id`、`title`、`status`（`queued` / `generating` / `ready` / `failed`）、`request`、`error`、`progress`（`stage`、`log[]`）、`evidence[]`、`checks[]`（各道闸门结果，含“跳过”）、`spec`（仅 `ready` 时）。
+
+- `engine`：`rig`（配置好的预制实验台，`spec.version = 2`）、`code`（L2 生成代码）、`component`（旧版 L1 组件）。
+- `component`：rig 实验为 `rig:<实验台 id>`。
+- `route`：L2 智能体选择的路线 `{route: "rig" | "code", reason}`，流水线生成的实验也会记录。
+- `activity`：`predict`、`make_it_happen`、`find_the_rule`。
+- `spec`：
+  - rig 实验是 v2 规格（实验台、参数、配置、读数、任务、播放、数据记录、预测题、可选的 3D `stage`），不含答案，答案只存在服务端；
+  - 旧版 L1 是组件配置；
+  - L2 代码实验是 `title`、`prompt`、`engine`、`params`、`predict`、`runner`、`preview`。rig 实验没有 `runner` 和 `preview`。
 
 **运行页与宿主的消息协议**（`postMessage`）：场景 → 宿主 `ready`（参数声明）、`observe`（观测值）、`ack`（已应用某个参数值）、`error`；宿主 → 场景 `set_param`。宿主只信任对应 `ack` 之后的 `observe`。
 
@@ -211,9 +221,26 @@ Coach 的回答正文是 Markdown（公式为 `\(...\)` / `\[...\]`），引用�
 - **投递**：发件箱与状态变化同一事务提交；失败指数退避，12 次后进入 `dead`，可用 replay 重放。
 - **消费方要求**：按 `event_id` 幂等；不信任事件体里的状态，收到后回拉 `GET /v1/media/{id}`；按 `seq` 容忍乱序和重复。
 
+## 4. 实验台服务（:8002）
+
+Node 服务（`services/rigs`，需 Node 22.18+），只做纯计算：不调模型、不联网、不存状态。学习后端和智能体工具通过它校验实验规格、取得预测答案与观测值；浏览器直接引用同一份代码（`packages/rigs`）画图。
+
+| 方法 | 路径 | 用途 | 请求 | 响应要点 |
+| --- | --- | --- | --- | --- |
+| GET | `/healthz` | 存活检查 | — | `ok`、`rigs`（数量）、`catalog`（目录哈希） |
+| GET | `/v1/rigs` | 实验台目录卡片，最相关的排在前面 | `?q=`（描述）、`&tags=`（逗号分隔）、`&limit=`（≤ 20） | `catalog`、`rigs[]`（`id`、`summary`、`use_when`、`not_for`、`tags`、`fields`、`observables`、`examples`、`stages?`、`version`） |
+| GET | `/v1/rigs/{id}` | 一个实验台的完整卡片 | — | 卡片字段，加 `formulas`（表达式语法）和 `example_specs[]`（最多 2 份能通过检查的规格） |
+| GET | `/v1/stages` | 3D 呈现及其对应的实验台 | — | `{kind: {rig}}` |
+| POST | `/v1/check` | 校验规格并计算预测答案 | `spec`（v2） | `ok`、`problems[]`、`answer`、`options[]`、`rig_version`、`catalog` |
+| POST | `/v1/observe` | 给定参数下的观测值（Coach 的 `observe_lab`） | `spec`、`set?`（参数名 → 值，按控件范围截断；未知参数报错） | `set`（实际使用的参数）、`observed` |
+| POST | `/v1/sweep` | 一个参数扫过一段范围时的观测值 | `spec`、`param`、`from?`、`to?`、`n?`（≤ 25）、`observe?`（只返回这些观测量） | `param`、`points[]`（`value`、`observed`） |
+
+错误：请求有误时返回 400 加 `{error}`，模型可以照着修改；未知实验台返回 404；实验台计算出错返回 500。学习后端调不通时退回旧版 L1 组件路径（流水线），定制实验只走写代码的路线。
+
 ## 变更记录
 
 | 日期 | 修改 |
 | --- | --- |
+| 2026-10-22 | 新增 `GET /api/scenes/{scene_id}/live`（定制实验构建过程的实时事件）；新增实验台服务（第 4 节）；交互场对象增加 `engine`、`route`、`activity`，rig 实验的 `spec` 为 v2 规格；`chapter_end` 新增动作 `lab`，决策响应附带 `lab` |
 | 2026-10-20 | 新增 `POST /api/videos/{media_id}/retry`；`manual` 信号只返回 `quiz` / `none`；Coach 正文为 Markdown，引用标记支持分组与区间 |
 | 2026-10-20 | v1.0：首版，覆盖学习后端 40 个、底座 19 个接口；`POST /api/marks` 的时间点往前补 5 秒 |

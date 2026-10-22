@@ -1,21 +1,25 @@
-"""Interactive scenes: making them, checking them, serving them.
+"""Interactive scenes (labs): making them, checking them, serving them.
 
-L1  made by the content pipeline, one per chapter at most: the model fills a SceneSpec for a
-    prebuilt component; code validates it and computes the prediction's answer.
-L2  made on a learner's request: a Pydantic AI coding agent writes Scene Kit code and calls
-    run_checks (static rules + a scripted run in the sandbox) until it passes; then the
-    workflow re-verifies independently, has a vision model review the screenshot, and
-    publishes. Every stage is recorded in `progress`, which the page shows as it happens.
+L1  made by the content pipeline, one per chapter at most. With the rig service up, the model writes a
+    version-2 lab spec for one of the prebuilt rigs (tools: list_rigs, describe_rig, try_rig) and the
+    rig service checks it and computes the prediction's answer; without it, the legacy two-component
+    SceneSpec path runs.
+L2  made on a learner's request by a Pydantic AI agent that chooses its route: "rig" (configure a
+    prebuilt rig, checked by the rig service) or "code" (write Scene Kit code; run_checks runs static
+    rules + a scripted run in the sandbox). The workflow then re-verifies independently, has a vision
+    model review the screenshot (code only), and publishes. Every stage is recorded in `progress`,
+    which the page shows as it happens.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 from pathlib import Path
 from typing import Any, Literal
 
 import sqlalchemy as sa
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from seedots.common.db import Database, utcnow
 from seedots.common.ids import new_id
@@ -26,13 +30,17 @@ from seedots.learning.catalog import short
 from seedots.learning.models import (Chapter, EvidenceSnapshot, Occurrence, SceneEvidence, SceneLevel, SceneSpec,
                                      SceneStatus, Video, Concept)
 from seedots.learning.scenes import kit, spec as l1
+from seedots.learning.scenes.lab_tools import authoring_tools
+from seedots.learning.scenes.live import BuildNarrator, LiveFeed
+from seedots.learning.scenes.rigs import RigClient, RigUnavailable, compact_card
 from seedots.learning.scenes.sandbox import Sandbox, run_protocol
 
 log = logging.getLogger("seedots.learning.scenes")
 
 WORKFLOW = "learning.scene"
 STEPS = ["draft", "verify", "review", "publish"]
-AGENT_REQUESTS = 6          # model requests per draft (each check is one sandbox run)
+AGENT_REQUESTS = 8          # model requests per draft (each check is one sandbox run or one rig check)
+LAB_REQUESTS = 6            # model requests per pipeline lab (describe + a few try_rig rounds)
 
 
 # ------------------------------------------------------------------------------ model outputs
@@ -67,6 +75,59 @@ class CodeOut(BaseModel):
     predict: PredictDecl
 
 
+class LabSpecOut(BaseModel):
+    spec: dict[str, Any] | None = None
+    evidence: list[str] = Field(default_factory=list)
+    activity: str = "predict"
+    reason: str = ""
+
+
+class BuildOut(BaseModel):
+    """The builder's answer: a rig spec (route "rig") or Scene Kit code (route "code").
+    Lenient on purpose: a model that writes a long reason, sends the spec as a JSON string or puts a rig-style
+    predict at the top level should not fail the whole build; route-specific checks happen after it answers."""
+    route: Literal["rig", "code"]
+    reason: str = ""
+    evidence: list[str] = Field(default_factory=list)
+    spec: dict[str, Any] | None = None                 # route rig
+    title: str = ""                                    # route code, as CodeOut
+    prompt: str = ""
+    engine: str | None = None
+    code: str = ""
+    params: list[dict[str, Any]] = Field(default_factory=list)
+    predict: dict[str, Any] | None = None
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _spec_text(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except ValueError:
+                return None
+        return v
+
+    @field_validator("reason", "title", "prompt", mode="before")
+    @classmethod
+    def _clip(cls, v: Any) -> Any:
+        return str(v)[:400] if v is not None else ""
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _ids(cls, v: Any) -> Any:
+        return [str(x) for x in v] if isinstance(v, list) else []
+
+    def as_code(self) -> CodeOut:
+        """The strict code declaration; raises with a readable message if the agent's answer was incomplete."""
+        return CodeOut(title=(self.title or "Scene")[:80], prompt=self.prompt[:240], engine=self.engine or "canvas",
+                       code=self.code, params=self.params, predict=self.predict)
+
+
+def is_lab(spec: dict[str, Any] | None) -> bool:
+    """A version-2 lab spec (a configured rig), as opposed to legacy L1 config or L2 code."""
+    return bool(spec) and spec.get("version") == 2 and "rig" in spec
+
+
 class ReviewOut(BaseModel):
     ok: bool
     score: int = Field(ge=1, le=5)
@@ -75,8 +136,10 @@ class ReviewOut(BaseModel):
 
 # ------------------------------------------------------------------------------ service
 class SceneService:
-    def __init__(self, db: Database, gateway: Gateway, sandbox: Sandbox | None, *, vision: bool, data_dir: Path):
-        self.db, self.gateway, self.sandbox, self.vision = db, gateway, sandbox, vision
+    def __init__(self, db: Database, gateway: Gateway, sandbox: Sandbox | None, *, vision: bool, data_dir: Path,
+                 rigs: RigClient | None = None):
+        self.db, self.gateway, self.sandbox, self.vision, self.rigs = db, gateway, sandbox, vision, rigs
+        self.live = LiveFeed()
         self.dir = data_dir / "scenes"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.engine: Engine | None = None
@@ -113,7 +176,64 @@ class SceneService:
                 for i, r in enumerate(dict.fromkeys(refs)) if r in by]
 
     # ================================================================== L1 (pipeline step)
+    def _cards(self, query: str, limit: int = 5) -> str:
+        try:
+            got = self.rigs.catalog(query, limit=limit) if self.rigs else {}
+        except RigUnavailable:
+            got = {}
+        cards = [compact_card(c) for c in got.get("rigs", [])]
+        return json.dumps(cards, ensure_ascii=False, indent=1) if cards else "(the rig service is unavailable: use route code)"
+
     def make_l1(self, media_id: str, chapter_id: str, run_id: int) -> dict[str, Any]:
+        if self.rigs is not None and self.rigs.available:
+            return self.make_lab(media_id, chapter_id, run_id)
+        return self.make_legacy(media_id, chapter_id, run_id)
+
+    def make_lab(self, media_id: str, chapter_id: str, run_id: int) -> dict[str, Any]:
+        """The model writes a lab spec with the rig tools; the rig service re-checks the answer itself."""
+        video, ch, sentences, concepts = self._chapter_context(chapter_id)
+        if not sentences:
+            return {"scene": None, "reason": "no transcript"}
+        refs = {short(x.id) for x in sentences}
+        query = f"{ch.title}. {', '.join(concepts)}. " + " ".join(x.content.get("text", "") for x in sentences[:12])
+        variables = {"title": video.title, "chapter_title": ch.title, "concepts": ", ".join(concepts) or "none",
+                     "sentences": self._lines(sentences), "cards": self._cards(query), "feedback": "none"}
+        tries: list[dict[str, Any]] = []
+        tools = authoring_tools(self.rigs, on_try=lambda spec, rep: tries.append(
+            {"rig": spec.get("rig") if isinstance(spec, dict) else None, "ok": rep.get("ok"),
+             "problems": rep.get("problems", [])[:3]}))
+        tag = self.gateway.prompts.get("lab_spec").tag
+        for attempt in range(2):          # one more round if our own check disagrees with the agent
+            try:
+                out: LabSpecOut = self.gateway.run("lab_spec", variables, tools=tools, max_requests=LAB_REQUESTS,
+                                                   use_cache=False, manifest={"chapter": chapter_id, "attempt": attempt})
+            except LLMError as exc:
+                return {"scene": None, "reason": f"lab agent failed: {exc}"[:200], "tries": len(tries)}
+            if out.spec is None:
+                return {"scene": None, "reason": out.reason[:200], "tries": len(tries)}
+            evidence = [r for r in out.evidence if r in refs]
+            rep = self.rigs.check(out.spec)
+            problems = list(rep.get("problems", [])) + ([rep["error"]] if "error" in rep else [])
+            if not evidence:
+                problems.append("evidence must list at least one sentence id from this chapter")
+            if rep.get("ok") and not problems:
+                with self.db.session() as s:
+                    row = SceneSpec(id=new_id("scn"), media_id=media_id, chapter_id=chapter_id, level=SceneLevel.L1,
+                                    component=f"rig:{out.spec['rig']}"[:64], title=str(out.spec.get("title", ""))[:120],
+                                    spec=out.spec, status=SceneStatus.READY, generator=tag, content_run_id=run_id,
+                                    gates={"rig_check": {k: rep.get(k) for k in ("ok", "answer", "options", "rig_version",
+                                                                                 "catalog")},
+                                           "activity": out.activity, "attempts": attempt + 1, "tries": tries[-8:],
+                                           "route": {"route": "rig", "reason": out.reason[:300]}},
+                                    progress={"stage": "ready", "log": []})
+                    row.evidence = self._evidence_rows(evidence, sentences)
+                    s.add(row)
+                    return {"scene": row.id, "component": row.component, "attempts": attempt + 1, "tries": len(tries)}
+            variables["feedback"] = f"Your previous answer was rejected: {'; '.join(problems)[:600]}. Fix it or return null."
+        return {"scene": None, "reason": f"rejected twice: {variables['feedback'][:200]}", "tries": len(tries)}
+
+    def make_legacy(self, media_id: str, chapter_id: str, run_id: int) -> dict[str, Any]:
+        """The two-component path, kept for when the rig service is down."""
         video, ch, sentences, concepts = self._chapter_context(chapter_id)
         if not sentences:
             return {"scene": None, "reason": "no transcript"}
@@ -172,6 +292,7 @@ class SceneService:
         return len(ids)
 
     def _progress(self, scene_id: str, stage: str, note: str, **extra: Any) -> None:
+        self.live.publish(scene_id, {"type": "stage", "stage": stage, "text": note})
         with self.db.session() as s:
             row = s.get(SceneSpec, scene_id)
             p = dict(row.progress or {})
@@ -204,6 +325,7 @@ class SceneService:
 
     def failed(self, workflow: str, arg: dict[str, Any], error: str) -> None:
         self._progress(arg["scene_id"], "failed", error[:300])
+        self.live.close(arg["scene_id"])
         with self.db.session() as s:
             row = s.get(SceneSpec, arg["scene_id"])
             row.status, row.error = SceneStatus.FAILED, error[:1000]
@@ -235,8 +357,18 @@ class SceneService:
             row = s.get(SceneSpec, scene_id)
             chapter_id, ask = row.chapter_id, row.request
         video, ch, sentences, concepts = self._chapter_context(chapter_id)
-        self._progress(scene_id, "drafting", "Writing the interactive from this chapter")
-        attempts: dict[str, Any] = {"n": 0, "passed": None}
+        self._progress(scene_id, "drafting", "Looking for a prebuilt rig that fits, or writing one")
+        attempts: dict[str, Any] = {"n": 0, "passed": None, "tries": []}
+
+        def on_try(spec: dict[str, Any], rep: dict[str, Any]) -> None:
+            rig = spec.get("rig") if isinstance(spec, dict) else "?"
+            attempts["tries"].append({"rig": rig, "ok": rep.get("ok"), "problems": rep.get("problems", [])[:3]})
+            if rep.get("ok"):
+                attempts["rig_ok"] = spec
+                # a draft the rig service accepts can be tried right away, before the final checks
+                self.live.publish(scene_id, {"type": "draft", "text": "A first version you can try", "spec": spec})
+            self._progress(scene_id, "checking", f"The {rig} rig fits" if rep.get("ok") else
+                           f"Trying the {rig} rig: {'; '.join(rep.get('problems', []))[:160]}")
 
         def run_checks(code: str, engine: str, params: list[ParamDecl], predict: PredictDecl,
                        title: str = "", prompt: str = "") -> dict[str, Any]:
@@ -257,28 +389,76 @@ class SceneService:
                            f"Draft needs fixes: {'; '.join(rep['problems'])[:200]}", attempt=attempts["n"])
             return rep
 
+        request = ask or "Make the key relationship in this chapter something I can experiment with."
+        tools: list[Any] = [run_checks]
+        if self.rigs is not None:
+            tools = [*authoring_tools(self.rigs, on_try=on_try), run_checks]
         try:
-            out: CodeOut = self.gateway.run("scene_code", {
+            built: BuildOut = self.gateway.run("scene_code", {
                 "title": video.title, "chapter_title": ch.title, "concepts": ", ".join(concepts) or "none",
-                "sentences": self._lines(sentences), "request": ask or "Make the key relationship in this chapter "
-                                                                      "something I can experiment with."},
-                tools=[run_checks], max_requests=AGENT_REQUESTS, manifest={"scene": scene_id})
+                "sentences": self._lines(sentences), "request": request,
+                "cards": self._cards(f"{request} {ch.title} {', '.join(concepts)}")},
+                tools=tools, max_requests=AGENT_REQUESTS, manifest={"scene": scene_id},
+                on_event=BuildNarrator(self.live, scene_id))
         except LLMError as exc:
-            # A draft that passed run_checks is kept even if the agent stumbles afterwards (e.g. it
-            # keeps re-checking until the request limit): verify re-runs every gate on it anyway.
-            if attempts["passed"] is None:
+            # A draft that passed its checks is kept even if the agent stumbles afterwards (e.g. it keeps
+            # re-checking until the request limit): verify re-runs every gate on it anyway.
+            if attempts.get("rig_ok") is not None:
+                built = BuildOut(route="rig", reason="the agent stopped after a rig spec passed", spec=attempts["rig_ok"])
+            elif attempts["passed"] is not None:
+                p = attempts["passed"]
+                built = BuildOut(route="code", reason="the agent stopped after a draft passed", **p.model_dump())
+                self._progress(scene_id, "checking", f"Using draft {attempts['passed_n']}, which passed")
+            else:
                 raise PermanentError(f"The scene agent could not finish: {exc}") from exc
-            out = attempts["passed"]
-            self._progress(scene_id, "checking", f"Using draft {attempts['passed_n']}, which passed")
-        refs = [short(x.id) for x in sentences[:3]]
-        self._done(scene_id, "draft", component=out.engine, title=out.title, spec=out.model_dump(),
-                   generator=self.gateway.prompts.get("scene_code").tag)
+        # the spec the rig service already accepted stands in for a final answer that leaves it out
+        # (models often answer {"route": "rig"} without repeating a long spec they just checked)
+        if built.route == "rig" and not built.spec and attempts.get("rig_ok") is not None:
+            built.spec = attempts["rig_ok"]
+        if built.route == "code" and not built.code and attempts.get("rig_ok") is not None:
+            built = BuildOut(route="rig", reason=built.reason or "a rig spec passed; no code was given",
+                             spec=attempts["rig_ok"], evidence=built.evidence)
+        refs = [short(x.id) for x in sentences]
+        cited = [r for r in built.evidence if r in refs] or refs[:3]
+        route = {"route": built.route, "reason": built.reason[:400], "tries": attempts["tries"][-8:]}
+        if built.route == "rig":
+            if not built.spec:
+                raise PermanentError("The agent chose a rig but gave no spec")
+            self._progress(scene_id, "checking", f"Built from the {built.spec.get('rig')} rig")
+            self._done(scene_id, "draft", component=f"rig:{built.spec.get('rig')}"[:64],
+                       title=str(built.spec.get("title", ""))[:120], spec=built.spec, gates={"route": route},
+                       generator=self.gateway.prompts.get("scene_code").tag)
+        else:
+            if not built.code or built.predict is None or not built.params:
+                raise PermanentError("The agent chose to write code but gave no code, params or prediction")
+            try:
+                out = built.as_code()
+            except ValidationError as exc:
+                raise PermanentError(f"The agent's code declaration is incomplete: {exc}"[:500]) from exc
+            self._done(scene_id, "draft", component=out.engine, title=out.title, spec=out.model_dump(),
+                       gates={"route": route}, generator=self.gateway.prompts.get("scene_code").tag)
         with self.db.session() as s:
             row = s.get(SceneSpec, scene_id)
-            row.evidence = self._evidence_rows(refs, sentences)
+            row.evidence = self._evidence_rows(cited, sentences)
 
     def _verify(self, scene_id: str) -> None:
         """Re-run every gate ourselves: the agent's word that it passed is not evidence."""
+        with self.db.session() as s:
+            row = s.get(SceneSpec, scene_id)
+            spec, gates = row.spec, dict(row.gates or {})
+        if is_lab(spec):
+            self._progress(scene_id, "verifying", "Checking the rig spec with the rig service")
+            if self.rigs is None:
+                raise PermanentError("The rig service is not configured")
+            try:
+                rep = self.rigs.check(spec)
+            except RigUnavailable as exc:
+                raise PermanentError(str(exc)) from exc
+            if not rep.get("ok"):
+                raise PermanentError("The lab failed its checks: " + "; ".join(rep.get("problems", [rep.get("error", "")]))[:500])
+            gates["rig_check"] = {k: rep.get(k) for k in ("ok", "answer", "options", "rig_version", "catalog")}
+            self._done(scene_id, "verify", gates=gates)
+            return
         self._progress(scene_id, "verifying", "Running the final interaction script")
         with self.db.session() as s:
             out = CodeOut.model_validate(s.get(SceneSpec, scene_id).spec)
@@ -288,14 +468,19 @@ class SceneService:
             (self.dir / f"{scene_id}.png").write_bytes(shot)
         if not rep["passed"]:
             raise PermanentError("The scene failed its checks: " + "; ".join(rep["problems"])[:500])
-        self._done(scene_id, "verify", gates={"static": "passed", "protocol": {k: v for k, v in rep.items()
-                                                                               if k != "stage"}})
+        self._done(scene_id, "verify", gates={**gates, "static": "passed",
+                                              "protocol": {k: v for k, v in rep.items() if k != "stage"}})
 
     def _review(self, scene_id: str) -> None:
         shot = self.dir / f"{scene_id}.png"
         with self.db.session() as s:
             row = s.get(SceneSpec, scene_id)
             gates, title, prompt, ask = dict(row.gates), row.title, row.spec.get("prompt", ""), row.request
+            lab = is_lab(row.spec)
+        if lab:                       # rigs draw themselves: nothing generated to look at
+            gates["review"] = {"skipped": "a prebuilt rig: its drawing is not generated"}
+            self._done(scene_id, "review", gates=gates)
+            return
         if not self.vision:
             gates["review"] = {"skipped": "no vision model configured (SEEDOTS_VLM_MODEL)"}
             self._progress(scene_id, "reviewing", "Screenshot review skipped: no vision model configured")
@@ -316,6 +501,7 @@ class SceneService:
     def _publish(self, scene_id: str) -> None:
         self._progress(scene_id, "ready", "Ready to try")
         self._done(scene_id, "publish", status=SceneStatus.READY, error=None)
+        self.live.close(scene_id)
 
     # ================================================================== reading
     def for_video(self, media_id: str) -> list[dict[str, Any]]:
@@ -341,7 +527,7 @@ class SceneService:
     def runner(self, scene_id: str, dark: bool = False) -> str:
         with self.db.session() as s:
             row = s.get(SceneSpec, scene_id)
-            if row is None or row.level != SceneLevel.L2 or row.status != SceneStatus.READY:
+            if row is None or row.level != SceneLevel.L2 or row.status != SceneStatus.READY or is_lab(row.spec):
                 raise KeyError(scene_id)
             return kit.runner_html(row.spec["code"], row.spec["engine"], row.title)
 
@@ -356,13 +542,20 @@ class SceneService:
         for e in row.evidence:
             snap = s.get(EvidenceSnapshot, (e.evidence_id, e.evidence_revision))
             ev.append({"id": e.evidence_id, "t0": snap.t0 if snap else None})
+        route = (row.gates or {}).get("route") or {}
         out: dict[str, Any] = {
             "id": row.id, "level": row.level.value, "component": row.component, "chapter_id": row.chapter_id,
+            "engine": "rig" if is_lab(row.spec) else ("code" if row.level == SceneLevel.L2 else "component"),
+            "route": {"route": route.get("route"), "reason": route.get("reason", "")} if route else None,
+            "activity": (row.gates or {}).get("activity"),
             "title": row.title, "status": row.status.value, "request": row.request, "error": row.error,
             "progress": {"stage": (row.progress or {}).get("stage"), "log": (row.progress or {}).get("log", [])},
             "evidence": ev, "checks": _checks(row.gates), "spec": None,
         }
         if row.status != SceneStatus.READY:
+            return out
+        if is_lab(row.spec):          # the spec carries no answer: the rig service keeps it in gates
+            out["spec"] = row.spec
             return out
         if row.level == SceneLevel.L1:
             from pydantic import TypeAdapter
@@ -380,6 +573,8 @@ class SceneService:
 def _checks(gates: dict[str, Any]) -> dict[str, str]:
     """Human-readable gate summary for the UI (never the answer)."""
     out = {}
+    if (gates.get("rig_check") or {}).get("ok"):
+        out["rig checks"] = "passed"
     if gates.get("invariants"):
         out["consistency checks"] = "passed"
     if gates.get("static"):
@@ -392,4 +587,4 @@ def _checks(gates: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-__all__ = ["CodeOut", "ReviewOut", "SceneService", "SpecOut", "WORKFLOW", "math"]
+__all__ = ["BuildOut", "CodeOut", "LabSpecOut", "ReviewOut", "SceneService", "SpecOut", "WORKFLOW", "is_lab", "math"]

@@ -25,7 +25,9 @@ from seedots.common.timefmt import fmt_ts
 from seedots.learning.catalog import current_sentences, ensure_user, short, visible_media_ids, visible_video
 from seedots.learning.models import (Attempt, Chapter, ChatRole, CitationKind, CoachMessage, CoachThread, Concept,
                                      ConceptAlias, EvidenceSnapshot, ItemConcept, LearningItem, Mark, MessageCitation,
-                                     Occurrence, OccurrenceEvidence, Video)
+                                     Occurrence, OccurrenceEvidence, SceneSpec, SceneStatus, Video)
+from seedots.learning.scenes.lab_tools import coaching_tools
+from seedots.learning.scenes.rigs import RigClient
 
 REF = re.compile(r"s\d{4}|o\d{1,2}")
 # One bracket may hold several ids: [s0042], [s0063, s0069], [s0066–s0069] (ranges cite both ends).
@@ -39,6 +41,7 @@ class CoachSession:
     def __init__(self, db: Database, user_id: str, media_id: str):
         self.db, self.user_id, self.media_id = db, user_id, media_id
         self.refs: dict[str, tuple[str, int, float, float, str | None]] = {}   # ref -> (evidence id, rev, t0, t1, media)
+        self.labs: dict[str, dict[str, Any]] = {}       # lab id -> {id, title, spec}: what observe_lab may run
 
     def add(self, ref: str, snap: EvidenceSnapshot, media_id: str | None = None) -> None:
         self.refs.setdefault(ref, (snap.id, snap.revision, snap.t0, snap.t1, media_id))
@@ -97,9 +100,19 @@ class CoachSession:
         return [transcript_around, concept_elsewhere]
 
 
+def _lab_line(lab: dict[str, Any], chapter_id: str | None) -> str:
+    """One line per lab for the coach: what it is, what can be set, what it measures."""
+    sp = lab["spec"]
+    params = ", ".join(f"{p['name']} ({p.get('label', '')}: {p.get('min', '')}..{p.get('max', '')}, now {p['value']})"
+                       for p in sp.get("params", []))
+    reads = ", ".join(r.get("value", "") for r in sp.get("readouts", [])[:4])
+    here = " (this chapter)" if lab.get("chapter_id") == chapter_id else ""
+    return f"{lab['id']}{here}: {lab['title']} [{sp.get('rig')} rig]; settings: {params}; shows: {reads or sp['predict']['observe']}"
+
+
 class Coach:
-    def __init__(self, db: Database, gateway: Gateway):
-        self.db, self.gateway = db, gateway
+    def __init__(self, db: Database, gateway: Gateway, rigs: RigClient | None = None):
+        self.db, self.gateway, self.rigs = db, gateway, rigs
 
     # ------------------------------------------------------------------ context pack
     def pack(self, s: Session, cs: CoachSession, t: float) -> tuple[dict[str, Any], list[tuple[str, str]], str]:
@@ -121,6 +134,12 @@ class Coach:
                            .where(Attempt.user_id == user_id, Attempt.correct.is_(False),
                                   LearningItem.media_id == media_id)
                            .order_by(Attempt.created_at.desc()).limit(3)).scalars().all()
+        # labs of this video the coach can run (rig specs only: their facts come from the rig service)
+        if self.rigs is not None:
+            for lab in s.scalars(sa.select(SceneSpec).where(SceneSpec.media_id == media_id,
+                                                           SceneSpec.status == SceneStatus.READY)):
+                if (lab.spec or {}).get("version") == 2:
+                    cs.labs[lab.id] = {"id": lab.id, "title": lab.title, "spec": lab.spec, "chapter_id": lab.chapter_id}
         thread = s.scalar(sa.select(CoachThread).where(CoachThread.user_id == user_id, CoachThread.media_id == media_id))
         if thread is None:
             thread = CoachThread(id=new_id("thr"), user_id=user_id, media_id=media_id)
@@ -138,6 +157,7 @@ class Coach:
             or "none",
             "misses": "; ".join(str(p.get("stem", ""))[:120] for p in misses) or "none",
             "now": fmt_ts(t),
+            "labs": "\n".join(_lab_line(x, chapter.id if chapter else None) for x in cs.labs.values()) or "none",
             "context": "\n".join(f"{short(x.id)} [{fmt_ts(x.t0)}]{' <- now' if x.t0 <= t < x.t1 else ''} "
                                  f"{x.content.get('text', '')}" for x in sents) or "(no transcript near this moment)",
         }
@@ -159,7 +179,8 @@ class Coach:
         variables, history, thread_id = await asyncio.to_thread(prepare)
         variables["question"] = question
         text = ""
-        async for delta in self.gateway.stream("coach", variables, history=history, tools=cs.tools(),
+        tools = cs.tools() + (coaching_tools(self.rigs, cs.labs) if self.rigs is not None and cs.labs else [])
+        async for delta in self.gateway.stream("coach", variables, history=history, tools=tools,
                                                manifest={"media_id": media_id, "t": t, "refs": len(cs.refs)}):
             text += delta
             yield {"type": "delta", "text": delta}

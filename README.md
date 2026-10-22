@@ -5,7 +5,7 @@
 English | [简体中文](README.zh-CN.md)
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776ab)
-![Node](https://img.shields.io/badge/node-20%2B-339933)
+![Node](https://img.shields.io/badge/node-22.18%2B-339933)
 ![Status](https://img.shields.io/badge/status-pre--alpha-orange)
 
 SeeDots adds an AI learning layer to the lecture video you are already watching. At the right
@@ -45,9 +45,12 @@ different videos are linked into one knowledge map.
 - **AI Coach.** A streaming tutor that answers about the moment you are at, cites clickable
   timestamps, flags anything not from the video, and can look up where you met a concept in
   your other videos. Answers render as Markdown with LaTeX.
-- **Interactive scenes.** Predict, try, observe, explain. L1 scenes are configured prebuilt
-  components (function plots, iterations) checked by code; L2 scenes are generated on request by
-  a coding agent and run in a locked-down sandbox only after passing scripted checks.
+- **Labs.** Predict, try, observe, explain, and make things happen or find the rule. Each chapter
+  gets a lab built on one of 12 prebuilt rigs (functions, iterations, vectors, distributions,
+  sampling, contour maps, motion, optics, stocks and flows, genetic crosses, sun and seasons,
+  timelines), several with a 3D view. A rig service checks every lab and computes its answers. On
+  request, an agent builds a custom lab: it tries the rigs first and writes sandboxed code only when
+  no rig fits. The Coach can run a chapter's lab to answer "what if" questions with computed numbers.
 - **Knowledge map.** Concepts are merged across videos into a global library; you get a map,
   concept pages, search, and knowledge cards you confirm yourself.
 - **Observable model use.** Every model call goes through one gateway with versioned prompts,
@@ -59,14 +62,14 @@ different videos are linked into one knowledge map.
 flowchart LR
   subgraph Web[Web app · Next.js :3000]
     P[Player + dot rail] --- POL[Intervention policy]
-    P --- LAB[Scene host]
+    P --- LAB[Lab: rigs + 3D]
     P --- COACHUI[Coach]
   end
   subgraph Learning[Learning backend · FastAPI :8000]
     INBOX[Inbox] --> PIPE[Chapter pipeline]
     PIPE --> LIB[Concept library]
     PIPE --> POOL[Item pool]
-    PIPE --> SCN[Scenes L1/L2]
+    PIPE --> SCN[Labs]
     RT[Runtime] --> POOL
     CO[Coach]
   end
@@ -78,6 +81,8 @@ flowchart LR
   OUT -- signed webhooks --> INBOX
   INBOX -- pull API --> EV
   Web -- REST + SSE --> Learning
+  SCN -- check specs, compute answers --> RIGS[Rig service · Node :8002]
+  CO -- observe_lab --> RIGS
   SCN -. runs generated code .-> SBX[Sandbox]
 ```
 
@@ -98,7 +103,7 @@ signed webhooks. See the [technical plan](docs/tech-plan.md) for the full design
 
 - macOS or Linux
 - Python 3.11+
-- Node.js 20+
+- Node.js 22.18+ (the rig service runs TypeScript directly)
 - ffmpeg
 - Google Chrome (only for L2 interactive scenes, which use it headlessly)
 - An API key for an OpenAI-compatible endpoint (default: [TokenRouter](https://www.tokenrouter.com)).
@@ -128,9 +133,9 @@ cd apps/web && npm install && cd ..
 scripts/dev.sh
 ```
 
-This starts the foundation on `:8001`, the learning backend on `:8000` and the web app on
-`:3000`. Open <http://localhost:3000>; the home page has a sample YouTube link filled in.
-`Ctrl+C` stops all three.
+This starts the foundation on `:8001`, the learning backend on `:8000`, the rig service on `:8002`
+and the web app on `:3000`. Open <http://localhost:3000>; the home page has a sample YouTube link
+filled in. <http://localhost:3000/lab> shows every rig with 57 example labs. `Ctrl+C` stops all four.
 
 > If a service exits with `address already in use`, something else is still bound to that
 > port (for example an earlier run). Stop it and start `scripts/dev.sh` again.
@@ -152,6 +157,7 @@ common ones are below; [`.env.example`](.env.example) lists and explains all of 
 | `SEEDOTS_ASR_MODEL` | — | Speech recognition for videos without captions |
 | `SEEDOTS_VLM_MODEL` | — | Vision model for the L2 screenshot review (skipped and labelled when unset) |
 | `SEEDOTS_SANDBOX` | `local` | Where L2 code runs: `local` (headless Chrome) or `off` |
+| `SEEDOTS_RIGS_URL` | `http://127.0.0.1:8002` | The rig service; without it, labs fall back to the two legacy components |
 | `SEEDOTS_ACTION_SELECTOR` | `llm` | `llm` (falls back to rules on error) or `rule` |
 | `SEEDOTS_WORKFLOW_ENGINE` | `inprocess` | `inprocess` or `temporal` (`pip install -e '.[temporal]'`) |
 | `SEEDOTS_MEDIA_DB_URL`, `SEEDOTS_LEARNING_DB_URL` | SQLite in `data/` | PostgreSQL via `pip install -e '.[postgres]'` |
@@ -170,8 +176,13 @@ The test suite runs offline with the fake model and needs no API key:
 cd services && .venv/bin/python -m pytest
 ```
 
-Sandbox tests run only when `services/scenekit` dependencies are installed; otherwise they are
-skipped. The web app has a type check:
+Sandbox tests run only when `services/scenekit` dependencies are installed, and lab tests only
+with Node 22.18+; otherwise they are skipped. The rig service has its own tests, and the web app
+has a type check:
+
+```bash
+cd services/rigs && node --test server.test.ts
+```
 
 ```bash
 cd apps/web && npm run typecheck
@@ -181,9 +192,13 @@ cd apps/web && npm run typecheck
 
 ```
 apps/web/                    Next.js web app (front end only; all logic is in the learning backend)
-  components/                Player, dot rail, coach, item and scene views, knowledge map
+  components/                Player, dot rail, coach, item and lab views, knowledge map
+  app/lab/                   Gallery of every rig with example labs and gate self-tests
+  lib/lab3d/                 3D stage (three.js, post-processing), parts library, 3D views of rigs
   lib/policy.ts              Intervention policy: when an interruption is acceptable
-  lib/expr.ts                Expression language for L1 scenes (same grammar as the backend)
+  lib/expr.ts                Expression language (re-exported from packages/rigs)
+packages/rigs/               Lab rigs in TypeScript, shared by the browser and the rig service:
+                             spec v2, gates, 12 rigs, plotting primitives, rig cards, example labs
 services/
   seedots/common/            Shared core: evidence contracts, DB, model gateway (llm/), workflow port
   seedots/media/             Video analysis foundation (:8001): sources, processors, webhooks
@@ -195,13 +210,15 @@ services/
     runtime.py               Action selection (model first, rules as the floor), grading, mastery
     coach.py                 Context pack, whitelisted tools, citations
     knowledge.py             Knowledge map, concept pages, cards, search
-    scenes/                  L1 specs, Scene Kit, sandbox port, L2 workflow
+    scenes/                  Labs: rig client and agent tools, legacy L1 specs, Scene Kit, sandbox, L2 workflow
     prompts/                 Versioned prompts
+  rigs/                      Rig service (:8002): checks lab specs, computes answers and observables
   scenekit/                  Local headless-Chrome sandbox for L2 scenes (Node + playwright-core)
+  scripts/eval_labs.py       Real-model evaluation of the lab agent on a copy of the database
   grabber/                   Web page video grabber (Node)
   migrations/                Alembic migrations, one set per service
   tests/                     Offline test suite
-scripts/dev.sh               Starts all three processes
+scripts/dev.sh               Starts all four processes
 docs/                        Product and engineering documents (in Chinese)
 ```
 
@@ -216,6 +233,8 @@ The engineering documents are written in Chinese and are maintained together wit
 | [`docs/api.md`](docs/api.md) | HTTP API of both services (a test keeps it in sync with the routes) |
 | [`docs/database.md`](docs/database.md) | Schema design and migration history |
 | [`docs/progress.md`](docs/progress.md) | Milestones, task board and weekly reports |
+| [`docs/decisions/`](docs/decisions/) | Decision records: why a design was chosen, what was rejected, what is left (labs so far) |
+| [`docs/research/`](docs/research/) | External research behind a design (WeduLab teardown, learning science for labs) |
 
 ## Design principles
 

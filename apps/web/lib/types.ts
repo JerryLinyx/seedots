@@ -1,4 +1,5 @@
 // Mirrors the learning backend's API (services/seedots/learning/api.py).
+import type { SceneSpecV2 } from "@seedots/rigs";
 
 export type Playback = { kind: "youtube_embed"; video_id: string } | { kind: "file"; path: string };
 
@@ -111,7 +112,7 @@ export type Signal = {
   detail?: Record<string, unknown>;
 };
 
-export type Action = "none" | "check_in" | "quiz" | "predict" | "rewatch" | "explain" | "link";
+export type Action = "none" | "check_in" | "quiz" | "predict" | "rewatch" | "explain" | "link" | "lab";
 
 export type Decision = {
   decision_id: string;
@@ -123,6 +124,7 @@ export type Decision = {
   item?: Item;
   rewatch?: { evidence_id: string; t0: number; t1: number; item_id: string };
   link?: { id: string; concept: string; concept_id: string; media_id: string; title: string; t0: number; t1: number };
+  lab?: { id: string; title: string; engine: string };
 };
 
 export type AttemptResult = {
@@ -256,6 +258,9 @@ export type Scene = {
   id: string;
   level: "l1" | "l2";
   component: string;
+  engine?: "rig" | "code" | "component"; // rig: a configured prebuilt rig (spec version 2)
+  route?: { route: "rig" | "code" | null; reason: string } | null; // how the builder chose to make it
+  activity?: string | null;
   chapter_id: string;
   title: string;
   status: "queued" | "generating" | "ready" | "failed";
@@ -264,5 +269,5 @@ export type Scene = {
   progress: { stage: string | null; log: SceneProgressEntry[] };
   evidence: { id: string; t0: number | null }[];
   checks: Record<string, string>;
-  spec: FunctionPlotSpec | IterationSpec | L2Spec | null;
+  spec: FunctionPlotSpec | IterationSpec | L2Spec | SceneSpecV2 | null;
 };

@@ -142,6 +142,7 @@ class Action(enum.StrEnum):
     REWATCH = "rewatch"
     EXPLAIN = "explain"
     LINK = "link"                         # "you met this concept in another video"
+    LAB = "lab"                           # "try this chapter's lab"
 
 
 class SignalKind(enum.StrEnum):

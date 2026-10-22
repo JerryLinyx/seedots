@@ -14,6 +14,20 @@ from seedots.common.llm.phrases import phrases
 FAKE_SCENE = (Path(__file__).parent / "scenes" / "fake_scene.js").read_text(encoding="utf-8")
 
 
+# a lab spec the rig service accepts: gradient descent on (x - 3)^2 with a learning-rate slider
+FAKE_LAB = {
+    "version": 2, "rig": "iteration", "title": "How big a step?",
+    "prompt": "Move the learning rate and watch the steps walk down the loss curve.",
+    "params": [{"name": "lr", "label": "Learning rate", "min": 0.02, "max": 1.1, "step": 0.01, "value": 0.1}],
+    "config": {"start": "0", "update": "x - lr*2*(x - 3)", "steps": 30, "objective": "(x - 3)^2",
+               "x": {"min": -1, "max": 7, "label": "parameter value"}, "target": "3"},
+    "readouts": [{"label": "steps to settle", "value": "settle_step", "digits": 0}],
+    "tasks": [{"text": "Settle in under 5 steps", "check": {"of": "settle_step", "op": "<", "value": 5}}],
+    "predict": {"question": "What happens to the steps if the learning rate is 1.05?", "set": {"lr": 1.05},
+                "observe": "behaviour", "kind": "category"},
+}
+
+
 def _sentences(text: str) -> list[tuple[str, str]]:
     return re.findall(r"^(s\d{4}) \[[^\]]+\](?: <- now)? (.+)$", text, flags=re.M)
 
@@ -87,6 +101,13 @@ def learning_brain(task: str, system: str, user: str):
             f"{name.capitalize()}: {quote.group(1) if quote else 'what the video explains here'}{cite}\n\n"
             f"Watch for the usual mix-up of treating it as a neighbouring idea. (offline draft)")})
     if task == "coach":
+        lab = re.search(r"Labs for this video: (scn_\w+)", system)
+        if lab and "what if" in user.lower() and "<tool observe_lab>" not in user:
+            return FakeToolCall("observe_lab", {"lab": lab.group(1), "settings": {"lr": 1.05}})
+        if "<tool observe_lab>" in user:
+            seen = re.search(r'"behaviour": "([^"]+)"', user)
+            return (f"(offline fake model) The lab computed it: the steps {seen.group(1) if seen else 'change'}. "
+                    f"[Try it in the lab](#lab-{lab.group(1) if lab else ''}?lr=1.05) What do you expect at 0.5?")
         if "other video" in user.lower() and "<tool concept_elsewhere>" not in user:
             first = re.search(r"Concepts here and common mistakes: ([^(;\n]+)", system)
             return FakeToolCall("concept_elsewhere", {"name": first.group(1).strip() if first else "x"})
@@ -109,7 +130,22 @@ def learning_brain(task: str, system: str, user: str):
             "predict": {"question": "What happens to the steps if the learning rate is 1.05?", "param": "lr",
                         "to": 1.05, "observe": {"kind": "behaviour"}},
             "evidence": [hit]}})
+    if task == "lab_spec":
+        sents = _sentences(user)
+        hit = next((sid for sid, s in sents if "learning rate" in s.lower() or "gradient" in s.lower()), None)
+        if hit is None:
+            return json.dumps({"spec": None, "evidence": [], "activity": "none",
+                               "reason": "no relationship to explore here (offline brain)"})
+        if "<tool try_rig>" not in user:
+            return FakeToolCall("try_rig", {"spec": FAKE_LAB})
+        return json.dumps({"spec": FAKE_LAB, "evidence": [hit], "activity": "make_it_happen",
+                           "reason": "an update rule applied again and again (offline brain)"})
     if task == "scene_code":
+        if "template" in user.lower():                        # the learner asked for something a rig can show
+            if "<tool try_rig>" not in user:
+                return FakeToolCall("try_rig", {"spec": FAKE_LAB})
+            # like real models often do: the final answer names the route but does not repeat the checked spec
+            return json.dumps({"route": "rig", "reason": "the iteration rig shows this (offline)", "evidence": []})
         decl = {"title": "Gradient descent, step by step", "prompt": "Change the learning rate and watch each step.",
                 "engine": "canvas", "code": FAKE_SCENE,
                 "params": [{"name": "lr", "label": "Learning rate", "min": 0.02, "max": 1.1, "step": 0.01, "value": 0.1}],
@@ -117,7 +153,7 @@ def learning_brain(task: str, system: str, user: str):
                             "observation": "behaviour", "options": ["settles down", "keeps bouncing", "blows up"]}}
         if "<tool run_checks>" not in user:
             return FakeToolCall("run_checks", decl)
-        return FakeToolCall("final_result", decl)          # scene_code returns its answer as a tool call
+        return json.dumps({"route": "code", "reason": "offline brain writes code", "evidence": [], **decl})
     if task == "scene_review":
         return json.dumps({"ok": True, "score": 4, "problems": []})
     return "{}"

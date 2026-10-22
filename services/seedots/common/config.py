@@ -59,6 +59,7 @@ class Settings:
     # service wiring
     media_url: str
     learning_url: str
+    rigs_url: str                        # the rig service (services/rigs): lab facts for every agent
     media_webhook_url: str
     webhook_secret: str
     grabber_dir: Path
@@ -107,6 +108,7 @@ def load_settings() -> Settings:
         temporal_address=_env("SEEDOTS_TEMPORAL_ADDRESS", "127.0.0.1:7233"),
         media_url=_env("SEEDOTS_MEDIA_URL", "http://127.0.0.1:8001").rstrip("/"),
         learning_url=_env("SEEDOTS_LEARNING_URL", "http://127.0.0.1:8000").rstrip("/"),
+        rigs_url=_env("SEEDOTS_RIGS_URL", "http://127.0.0.1:8002").rstrip("/"),
         media_webhook_url=_env("SEEDOTS_MEDIA_WEBHOOK_URL", "http://127.0.0.1:8000/hooks/media"),
         webhook_secret=_env("SEEDOTS_WEBHOOK_SECRET", "change-me"),
         grabber_dir=Path(_env("SEEDOTS_GRABBER_DIR") or REPO_ROOT / "services" / "grabber"),

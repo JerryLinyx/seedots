@@ -62,6 +62,7 @@ usage_logs, llm_cache
 
 - `0001` 初始结构
 - `0002` 交互场：`scene_specs` 增加 title / request / progress / error / generator / content_run_id / updated_at，新增 `scene_evidence`，状态增加 `queued`（只是换一条 CHECK 约束，示范了“枚举 = VARCHAR + CHECK”的好处）。新增的 NOT NULL 列带 server_default，已有数据可以直接升级；降级会把 `queued` 先改回 `generating`。
+- `0003` 决策动作新增 `lab`（邀请学习者去做本章的实验）：`decisions.action` 和 `decisions.rule_action` 换一对 CHECK 约束；降级时先把 `lab` 改回 `none`。实验台实验仍存在 `scene_specs`：`component` 为 `rig:<实验台>`，`spec` 为 v2 规格，答案在 `gates.rig_check`，不需要改表。
 
 ## 迁移
 

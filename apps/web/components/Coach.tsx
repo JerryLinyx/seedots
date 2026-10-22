@@ -9,8 +9,14 @@ export type CoachHandle = { ask: (question: string) => void };
 
 export const Coach = forwardRef<
   CoachHandle,
-  { mediaId: string; now: () => number; onSeek: (t: number, mediaId?: string) => void; nowLabel: string }
->(function Coach({ mediaId, now, onSeek, nowLabel }, ref) {
+  {
+    mediaId: string;
+    now: () => number;
+    onSeek: (t: number, mediaId?: string) => void;
+    nowLabel: string;
+    onOpenLab?: (id: string, set: Record<string, number>) => void;
+  }
+>(function Coach({ mediaId, now, onSeek, nowLabel, onOpenLab }, ref) {
   const [log, setLog] = useState<CoachMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -87,7 +93,7 @@ export const Coach = forwardRef<
             </div>
           ) : (
             <div key={i} className="msg-bot">
-              <Markdown text={m.content} citations={m.citations} onSeek={onSeek} />
+              <Markdown text={m.content} citations={m.citations} onSeek={onSeek} onOpenLab={onOpenLab} />
               {busy && i === log.length - 1 && <span className="caret" aria-label="Writing" />}
             </div>
           ),

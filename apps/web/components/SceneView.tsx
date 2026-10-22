@@ -3,7 +3,9 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, fmt, mediaUrl } from "@/lib/api";
 import { behaviour, change, evaluate, iterate, parse } from "@/lib/expr";
+import type { SceneSpecV2 } from "@seedots/rigs";
 import type { FunctionPlotSpec, IterationSpec, L2Spec, Scene, SceneParam } from "@/lib/types";
+import { RigScene } from "./RigScene";
 
 type Emit = (type: string, payload: Record<string, unknown>) => void;
 type Phase = "predict" | "try" | "seen";
@@ -260,7 +262,7 @@ function Slider({ p, value, disabled, target, onChange, onCommit }: {
 }
 
 export function SceneLab({ scene, onEvent, onAsk, onSeek }: { scene: Scene; onEvent: Emit; onAsk: (q: string) => void; onSeek: (t: number) => void }) {
-  const spec = scene.spec!;
+  const spec = scene.spec as FunctionPlotSpec | IterationSpec | L2Spec; // rig labs (version 2) render in RigScene
   const pred = spec.predict;
   const defaults = useMemo(() => Object.fromEntries(spec.params.map((p) => [p.name, p.value])), [spec]);
   const [values, setValues] = useState<Record<string, number>>(defaults);
@@ -439,12 +441,81 @@ export function SceneLab({ scene, onEvent, onAsk, onSeek }: { scene: Scene; onEv
 /* ------------------------------------------------------------------ requesting an L2 scene */
 const STAGES: [string, string][] = [
   ["queued", "Queued"],
-  ["drafting", "Writing"],
-  ["checking", "Testing in the sandbox"],
+  ["drafting", "Designing"],
+  ["checking", "Checking drafts"],
   ["verifying", "Final check"],
   ["reviewing", "Screenshot review"],
   ["ready", "Ready"],
 ];
+
+type LiveEvent = { seq: number; type: string; text?: string; stage?: string; seconds?: number; chars?: number;
+  params?: string; question?: string; spec?: SceneSpecV2 };
+
+const ICON: Record<string, string> = { stage: "•", tool: "→", draft_try: "✎", tool_done: "✓", problem: "!", draft: "★", text: "…" };
+
+/** A lab being built, streamed: what the agent is doing now, the last few steps, and the first draft to try. */
+function LiveBuild({ scene, onDone, onEvent, onAsk }: { scene: Scene; onDone: (s: Scene) => void; onEvent: Emit; onAsk: (q: string) => void }) {
+  const [steps, setSteps] = useState<LiveEvent[]>([]);
+  const [now, setNow] = useState<LiveEvent | null>(null); // thinking / writing: replaced, not appended
+  const [draft, setDraft] = useState<SceneSpecV2 | null>(null);
+  const [linked, setLinked] = useState(true);
+  const done = useRef(onDone);
+  done.current = onDone;
+  useEffect(() => {
+    const es = new EventSource(mediaUrl(`/api/scenes/${scene.id}/live`));
+    const add = (e: MessageEvent) => {
+      const ev = JSON.parse(e.data) as LiveEvent;
+      if (ev.type === "thinking" || ev.type === "writing") return setNow(ev);
+      setNow(null);
+      if (ev.type === "draft" && ev.spec) setDraft(ev.spec);
+      setSteps((xs) => [...xs.filter((x) => x.seq !== ev.seq), ev].slice(-40));
+    };
+    for (const t of ["stage", "thinking", "writing", "tool", "draft_try", "tool_done", "problem", "draft", "text"]) es.addEventListener(t, add);
+    es.addEventListener("done", (e) => {
+      es.close();
+      done.current(JSON.parse((e as MessageEvent).data) as Scene);
+    });
+    es.onerror = () => setLinked(false); // the panel keeps polling the scene, so nothing is lost
+    return () => es.close();
+  }, [scene.id]);
+
+  const shown = steps.filter((x) => x.type !== "stage" || x.text).slice(-7);
+  return (
+    <div className="lab-live">
+      <Progress scene={scene} />
+      <div className="lab-live-feed" role="log" aria-live="polite">
+        {now && (
+          <p className="lab-live-now">
+            <span className="lab-live-spin" aria-hidden />
+            {now.text}
+            {now.type === "thinking" && now.seconds != null ? ` · ${now.seconds} s` : ""}
+            {now.type === "writing" && now.chars ? ` · ${now.chars.toLocaleString()} characters` : ""}
+          </p>
+        )}
+        <ol>
+          {shown.map((x) => (
+            <li key={x.seq} className={`t-${x.type}`}>
+              <i aria-hidden>{ICON[x.type] ?? "·"}</i>
+              <span>
+                {x.text}
+                {x.type === "draft_try" && (x.params || x.question) && (
+                  <small>{[x.params && `controls: ${x.params}`, x.question && `asks: “${x.question}”`].filter(Boolean).join(" · ")}</small>
+                )}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {!linked && !steps.length && <p className="rig-muted">Live details are not available; showing the stages only.</p>}
+      </div>
+      {draft && (
+        <div className="lab-live-draft">
+          <p className="rig-muted">A first version passed the rig's checks. You can try it while the final checks finish.</p>
+          <RigScene spec={draft} sceneId={scene.id} onEvent={onEvent} onAsk={onAsk} />
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Progress({ scene }: { scene: Scene }) {
   const reached = new Set(scene.progress.log.map((l) => l.stage));
@@ -466,6 +537,26 @@ function Progress({ scene }: { scene: Scene }) {
   );
 }
 
+const ACTIVITY: Record<string, string> = { predict: "Predict", make_it_happen: "Make it happen", find_the_rule: "Find the rule" };
+
+/** Tab label: what the learner does in it, and who made it. */
+function labLabel(s: Scene, builtIndex: number): string {
+  if (s.level === "l2") return builtIndex > 0 ? `Built for you (${builtIndex + 1})` : "Built for you";
+  return (s.activity && ACTIVITY[s.activity]) || "Quick experiment";
+}
+
+export const isRigLab = (s: Scene) => s.engine === "rig" || (s.spec as SceneSpecV2 | null)?.version === 2;
+
+function EvidenceChip({ scene, onSeek }: { scene: Scene; onSeek: (t: number) => void }) {
+  const first = scene.evidence.find((e) => e.t0 != null);
+  if (!first) return null;
+  return (
+    <button className="time-chip" onClick={() => onSeek(first.t0!)} title="Where the video explains this">
+      {fmt(first.t0)}
+    </button>
+  );
+}
+
 export function ScenePanel({
   mediaId,
   chapterId,
@@ -474,6 +565,7 @@ export function ScenePanel({
   onEvent,
   onAsk,
   onSeek,
+  open,
 }: {
   mediaId: string;
   chapterId: string;
@@ -482,6 +574,8 @@ export function ScenePanel({
   onEvent: Emit;
   onAsk: (q: string) => void;
   onSeek: (t: number) => void;
+  /** Open this lab (from a coach link or an intervention), optionally at these settings. */
+  open?: { id: string; set?: Record<string, number>; n: number } | null;
 }) {
   const [extra, setExtra] = useState<Scene[]>([]);
   const all = useMemo(() => {
@@ -493,6 +587,12 @@ export function ScenePanel({
   const pending = all.filter((s) => s.level === "l2" && s.status !== "ready");
   const [active, setActive] = useState<string | null>(null);
   const shown = ready.find((s) => s.id === active) ?? ready[ready.length - 1];
+  const section = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    setActive(open.id);
+    section.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [open]);
   const [ask, setAsk] = useState("");
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -527,23 +627,24 @@ export function ScenePanel({
   }
 
   return (
-    <section className="lab-wrap" aria-label="Try it yourself">
+    <section className="lab-wrap" aria-label="Lab" id="lab" ref={section}>
       <div className="lab-title-row">
-        <h2>Try it yourself</h2>
+        <h2>Lab</h2>
         {ready.length > 1 && (
           <div className="lab-switch" role="tablist" aria-label="Interactives for this chapter">
-            {ready.map((s) => {
-              const n = ready.filter((x) => x.level === "l2").indexOf(s);
-              return (
-                <button key={s.id} role="tab" aria-selected={shown?.id === s.id} onClick={() => setActive(s.id)}>
-                  {s.level === "l2" ? (n > 0 ? `Built for you (${n + 1})` : "Built for you") : "Quick experiment"}
-                </button>
-              );
-            })}
+            {ready.map((s) => (
+              <button key={s.id} role="tab" aria-selected={shown?.id === s.id} onClick={() => setActive(s.id)}>
+                {labLabel(s, ready.filter((x) => x.level === "l2").indexOf(s))}
+              </button>
+            ))}
           </div>
         )}
       </div>
-      {shown ? (
+      {shown && isRigLab(shown) ? (
+        <RigScene key={`${shown.id}-${open?.id === shown.id ? open.n : 0}`} spec={shown.spec as SceneSpecV2} sceneId={shown.id}
+          onEvent={onEvent} onAsk={onAsk} preset={open?.id === shown.id ? open.set : undefined}
+          aside={<EvidenceChip scene={shown} onSeek={onSeek} />} />
+      ) : shown ? (
         <SceneLab key={shown.id} scene={shown} onEvent={onEvent} onAsk={onAsk} onSeek={onSeek} />
       ) : (
         !pending.length && (
@@ -553,9 +654,17 @@ export function ScenePanel({
           </p>
         )
       )}
-      {pending.map((s) => (
-        <Progress key={s.id} scene={s} />
-      ))}
+      {pending.map((s) =>
+        s.status === "queued" || s.status === "generating" ? (
+          <LiveBuild key={s.id} scene={s} onEvent={onEvent} onAsk={onAsk}
+            onDone={(fresh) => {
+              setExtra((xs) => [...xs.filter((x) => x.id !== fresh.id), fresh]);
+              if (fresh.status === "ready") setActive(fresh.id);
+            }} />
+        ) : (
+          <Progress key={s.id} scene={s} />
+        ),
+      )}
       <form className="lab-request" onSubmit={request}>
         <label htmlFor={`ask-${chapterId}`} className="sr-only">
           What would you like to experiment with?
@@ -569,7 +678,7 @@ export function ScenePanel({
           onChange={(e) => setAsk(e.target.value)}
         />
         <button className="btn" type="submit" disabled={asking || pending.some((s) => s.status !== "failed")}>
-          {asking ? "Starting…" : "Build an interactive"}
+          {asking ? "Starting…" : "Build a lab"}
         </button>
       </form>
       {error && <p className="notice" role="alert" style={{ margin: 0 }}>{error}</p>}

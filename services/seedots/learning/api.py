@@ -14,6 +14,7 @@
   GET  /api/videos/{id}/file | /frames/{n}   media we hold (range requests pass through)
 
   POST /api/events                           batched behaviour events (append-only)
+  GET  /api/scenes/{scene_id}/live          lab build events (SSE)
   POST /api/decide                           signal -> action (+ item / rewatch span / link)
   POST /api/decisions/{id}/outcome           shown | dismissed | suppressed
   POST /api/attempts                         grade server-side, update mastery
@@ -35,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
@@ -578,6 +580,31 @@ def create_app(container: LearningContainer | None = None) -> FastAPI:
         return HTMLResponse(html, headers={
             "Content-Security-Policy": f"sandbox allow-scripts; {CSP}", "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer", "Cache-Control": "no-store"})
+
+    @app.get("/api/scenes/{scene_id}/live")
+    async def scene_live(scene_id: str, after: int = 0, user: str = Depends(current_user)) -> StreamingResponse:
+        """What the builder is doing right now (server-sent events): stage changes, the agent searching rigs,
+        reading cards, writing and checking drafts, a first draft to try. Ends with `done` and the scene."""
+        await asyncio.to_thread(_scene_visible, scene_id, user)
+
+        async def gen():
+            seq, started, checked = after, time.monotonic(), 0.0
+            while time.monotonic() - started < 900:
+                events, closed = c.scenes.live.since(scene_id, seq)
+                for e in events:
+                    seq = e["seq"]
+                    yield sse(e["type"], e)
+                # the feed closes when the build ends; without a feed (another process) watch the row
+                if not events and (closed or time.monotonic() - checked > 2):
+                    checked = time.monotonic()
+                    scene = await asyncio.to_thread(c.scenes.get, scene_id)
+                    if closed or scene["status"] in ("ready", "failed"):
+                        yield sse("done", scene)
+                        return
+                await asyncio.sleep(0.3)
+            yield sse("done", await asyncio.to_thread(c.scenes.get, scene_id))
+        return StreamingResponse(gen(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     @app.get("/api/scenes/{scene_id}/preview.png")
     def scene_preview(scene_id: str, user: str = Depends(current_user)):

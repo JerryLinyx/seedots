@@ -5,7 +5,7 @@
 [English](README.md) | 简体中文
 
 ![Python](https://img.shields.io/badge/python-3.11%2B-3776ab)
-![Node](https://img.shields.io/badge/node-20%2B-339933)
+![Node](https://img.shields.io/badge/node-22.18%2B-339933)
 ![Status](https://img.shields.io/badge/status-pre--alpha-orange)
 
 SeeDots 给你正在看的教学视频加一层 AI：在恰当的时刻出现可验证的学习动作（题目、预测、实验、回看），
@@ -39,8 +39,9 @@ SeeDots 给你正在看的教学视频加一层 AI：在恰当的时刻出现可
   （频率上限、专注模式、连续关闭后静音），后端决定**出什么**。
 - **AI Coach。** 流式回答你当前所在时刻的问题，附可点击的时间点，标出不来自视频的内容，
   还能查到你在其他视频里在哪学过同一个概念。回答按 Markdown 渲染，支持 LaTeX 公式。
-- **交互场。** 先预测、再动手、看结果、最后解释。L1 是预置组件（函数图像、迭代过程）的配置，由代码校验；
-  L2 由编码 agent 按需生成，只有通过脚本化检查后才在隔离沙箱里运行。
+- **实验（Lab）。** 先预测、再动手、看结果、最后解释，还可以“让它发生”或“找出规律”。每章的实验建在 12 个预制实验台之一上：函数、迭代、向量、概率分布、抽样、等高线地图、运动、光学、存量与流量、杂交、太阳与季节、时间线。其中几种带 3D 视图。
+  实验台服务负责检查每个实验并计算答案。学习者提出要求时，agent 先试实验台，实验台做不到才写代码，代码在隔离沙箱里运行。
+  Coach 可以调用本章的实验，用算出来的数字回答“如果……会怎样”。
 - **知识地图。** 概念跨视频合并进全局概念库；提供地图、概念页、搜索，以及需要你确认的知识卡片。
 - **模型调用可观测。** 所有模型调用都经过同一个网关：提示词版本化、类型化输出、缓存、预算和调用日志（`GET /api/usage`）。
 
@@ -50,14 +51,14 @@ SeeDots 给你正在看的教学视频加一层 AI：在恰当的时刻出现可
 flowchart LR
   subgraph Web[前端 · Next.js :3000]
     P[播放器 + 点线时间轴] --- POL[介入策略]
-    P --- LAB[交互场宿主]
+    P --- LAB[实验：实验台 + 3D]
     P --- COACHUI[Coach]
   end
   subgraph Learning[学习后端 · FastAPI :8000]
     INBOX[收件箱] --> PIPE[章节内容流水线]
     PIPE --> LIB[全局概念库]
     PIPE --> POOL[学习项池]
-    PIPE --> SCN[交互场 L1/L2]
+    PIPE --> SCN[实验]
     RT[运行时] --> POOL
     CO[Coach]
   end
@@ -69,6 +70,8 @@ flowchart LR
   OUT -- 签名 Webhook --> INBOX
   INBOX -- 拉取接口 --> EV
   Web -- REST + SSE --> Learning
+  SCN -- 检查规格、计算答案 --> RIGS[实验台服务 · Node :8002]
+  CO -- observe_lab --> RIGS
   SCN -. 运行生成代码 .-> SBX[沙箱]
 ```
 
@@ -84,7 +87,7 @@ flowchart LR
 
 - macOS 或 Linux
 - Python 3.11+
-- Node.js 20+
+- Node.js 22.18+（实验台服务直接运行 TypeScript）
 - ffmpeg
 - Google Chrome（只有 L2 交互场需要，以无头模式使用）
 - 一个 OpenAI 兼容接口的密钥（默认 [TokenRouter](https://www.tokenrouter.com)）。没有密钥也可以用离线假模型跑通全部流程。
@@ -113,8 +116,8 @@ cd apps/web && npm install && cd ..
 scripts/dev.sh
 ```
 
-会启动底座 `:8001`、学习后端 `:8000` 和前端 `:3000`。打开 <http://localhost:3000>，首页已填好示例 YouTube 链接。
-`Ctrl+C` 同时停止三个进程。
+会启动底座 `:8001`、学习后端 `:8000`、实验台服务 `:8002` 和前端 `:3000`。打开 <http://localhost:3000>，首页已填好示例 YouTube 链接；
+<http://localhost:3000/lab> 展示全部实验台和 57 个示例实验。`Ctrl+C` 同时停止四个进程。
 
 > 如果某个服务报 `address already in use` 并退出，说明端口还被别的进程占着（例如上一次运行没停干净）。
 > 停掉它，再重新运行 `scripts/dev.sh`。
@@ -135,6 +138,7 @@ scripts/dev.sh
 | `SEEDOTS_ASR_MODEL` | — | 没有字幕的视频用的语音识别 |
 | `SEEDOTS_VLM_MODEL` | — | L2 截图审查用的视觉模型（不配置时这一关记为“跳过”并在界面上写明） |
 | `SEEDOTS_SANDBOX` | `local` | L2 代码在哪里运行：`local`（无头 Chrome）或 `off` |
+| `SEEDOTS_RIGS_URL` | `http://127.0.0.1:8002` | 实验台服务；连不上时实验退回旧版的两个组件 |
 | `SEEDOTS_ACTION_SELECTOR` | `llm` | `llm`（出错时回退规则）或 `rule` |
 | `SEEDOTS_WORKFLOW_ENGINE` | `inprocess` | `inprocess` 或 `temporal`（需 `pip install -e '.[temporal]'`） |
 | `SEEDOTS_MEDIA_DB_URL`、`SEEDOTS_LEARNING_DB_URL` | `data/` 下的 SQLite | 换 PostgreSQL 需 `pip install -e '.[postgres]'` |
@@ -152,7 +156,11 @@ scripts/dev.sh
 cd services && .venv/bin/python -m pytest
 ```
 
-沙箱相关测试只在安装了 `services/scenekit` 依赖时运行，否则跳过。前端有类型检查：
+沙箱相关测试只在安装了 `services/scenekit` 依赖时运行，实验相关测试只在 Node 22.18+ 下运行，否则跳过。实验台服务有自己的测试，前端有类型检查：
+
+```bash
+cd services/rigs && node --test server.test.ts
+```
 
 ```bash
 cd apps/web && npm run typecheck
@@ -162,9 +170,12 @@ cd apps/web && npm run typecheck
 
 ```
 apps/web/                    Next.js 前端（只做前端，业务全部在学习后端）
-  components/                播放器、点线时间轴、Coach、题目和交互场视图、知识地图
+  components/                播放器、点线时间轴、Coach、题目和实验视图、知识地图
+  app/lab/                   全部实验台的展示页：示例实验和闸门自检
+  lib/lab3d/                 3D 舞台（three.js、后处理）、零件库、实验台的 3D 视图
   lib/policy.ts              介入策略：什么时候可以打扰
-  lib/expr.ts                L1 交互场的表达式语言（与后端同一套语法）
+  lib/expr.ts                表达式语言（从 packages/rigs 转出）
+packages/rigs/               实验台（TypeScript），浏览器和实验台服务共用：规格 v2、闸门、12 个实验台、作图原语、说明卡片、示例实验
 services/
   seedots/common/            共享内核：证据契约、数据库、模型网关（llm/）、工作流端口
   seedots/media/             视频分析底座（:8001）：来源、处理器、Webhook
@@ -176,13 +187,15 @@ services/
     runtime.py               动作选择（模型优先、规则兜底）、评分、掌握度
     coach.py                 上下文包、白名单工具、引用
     knowledge.py             知识地图、概念页、知识卡片、搜索
-    scenes/                  L1 配置、Scene Kit、沙箱端口、L2 工作流
+    scenes/                  实验：实验台客户端与 agent 工具、旧版 L1 配置、Scene Kit、沙箱、L2 工作流
     prompts/                 版本化提示词
+  rigs/                      实验台服务（:8002）：检查实验规格，计算答案和观测值
   scenekit/                  L2 交互场的本机无头 Chrome 沙箱（Node + playwright-core）
+  scripts/eval_labs.py       在数据库副本上用真实模型评测实验 agent
   grabber/                   网页视频抓取（Node）
   migrations/                Alembic 迁移，每个服务一套
   tests/                     离线测试
-scripts/dev.sh               一键启动三个进程
+scripts/dev.sh               一键启动四个进程
 docs/                        产品与工程文档（中文）
 ```
 
@@ -197,6 +210,8 @@ docs/                        产品与工程文档（中文）
 | [`docs/api.md`](docs/api.md) | 两个服务的 HTTP 接口（由测试保证与路由一致） |
 | [`docs/database.md`](docs/database.md) | 数据库设计与迁移历史 |
 | [`docs/progress.md`](docs/progress.md) | 里程碑、任务看板、周报 |
+| [`docs/decisions/`](docs/decisions/) | 决策记录：为什么这样设计、放弃了什么、还剩什么（目前是 Lab） |
+| [`docs/research/`](docs/research/) | 设计背后的外部调研（WeduLab 拆解、Lab 的学习科学依据） |
 
 ## 设计原则
 

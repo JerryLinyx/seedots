@@ -272,6 +272,20 @@ export function LearnView({ mediaId }: { mediaId: string }) {
     [log],
   );
 
+  // open a lab (from a coach link or a card), optionally at given settings
+  const [labOpen, setLabOpen] = useState<{ id: string; set?: Record<string, number>; n: number } | null>(null);
+  const openLab = useCallback(
+    (id: string, set?: Record<string, number>) => {
+      // a lab of another chapter: go to that chapter first, so its lab section is the one shown
+      const lab = pack?.scenes.find((x) => x.id === id);
+      const ch = lab && pack?.chapters.find((c) => c.id === lab.chapter_id);
+      if (ch && ch.id !== currentChapter?.id) seek(ch.t0);
+      setLabOpen({ id, set, n: Date.now() });
+      log.log("scene.open_request", player.current?.time() ?? null, { scene_id: id, set: set ?? {} });
+    },
+    [log, pack, currentChapter, seek],
+  );
+
   function askCoach(q: string) {
     setTab("coach");
     setTimeout(() => coach.current?.ask(q), 0);
@@ -444,6 +458,7 @@ export function LearnView({ mediaId }: { mediaId: string }) {
                   onEvent={sceneEvent}
                   onAsk={askCoach}
                   onSeek={seek}
+                  open={labOpen && pack.scenes.some((x) => x.id === labOpen.id && x.chapter_id === currentChapter.id) ? labOpen : null}
                 />
               )}
             </div>
@@ -458,6 +473,7 @@ export function LearnView({ mediaId }: { mediaId: string }) {
                   onSeek={seek}
                   onAsk={askCoach}
                   onPlay={() => player.current?.play()}
+                  onOpenLab={(id) => openLab(id)}
                   onClose={(engaged) => {
                     if (engaged) policyRef.current?.engaged(c.action);
                     else policyRef.current?.dismissed(c.action);
@@ -502,7 +518,8 @@ export function LearnView({ mediaId }: { mediaId: string }) {
                 />
               )}
               {tab === "coach" && (
-                <Coach ref={coach} mediaId={mediaId} now={() => player.current?.time() ?? now} onSeek={seek} nowLabel={fmt(now)} />
+                <Coach ref={coach} mediaId={mediaId} now={() => player.current?.time() ?? now} onSeek={seek} nowLabel={fmt(now)}
+                  onOpenLab={openLab} />
               )}
               {tab === "concepts" && (
                 <ul className="concepts">
